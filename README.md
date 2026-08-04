@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/tapir_logo.png" width="120" alt="Tapir logo">
+</p>
+
 # Scripts TAPIR-ARCHICAD
 
 [Français](#français) · [English](#english)
@@ -7,6 +11,8 @@
 ## Français
 
 Dépôt regroupant les scripts d'automatisation Archicad (via l'add-on [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation)) et les outils cadastraux associés, développés pour l'agence.
+
+> ⚠️ **Portée géographique** : ces scripts s'appuient sur des données et API publiques françaises (IGN, BD TOPO, RGE ALTI, cadastre data.gouv.fr) et ne fonctionnent donc, en l'état, que sur le territoire français. Ils peuvent en revanche servir de base pour une adaptation à d'autres pays, à condition de remplacer les sources de données par leurs équivalents locaux.
 
 ### Scripts
 
@@ -24,6 +30,8 @@ Lancement : voir `SCRIPTS/CONTEXT GENERATOR/lancer sous mac os.command` (macOS) 
 ## English
 
 Repository gathering Archicad automation scripts (via the [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation) add-on) and related cadastral tools, developed for the agency.
+
+> ⚠️ **Geographic scope**: these scripts rely on French public data and APIs (IGN, BD TOPO, RGE ALTI, data.gouv.fr cadastre) and therefore only work within France as-is. They can, however, serve as a starting point for adapting to other countries, provided the data sources are swapped for local equivalents.
 
 ### Scripts
 
