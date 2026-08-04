@@ -1486,7 +1486,7 @@ def _download_dxf(commune_path, com_abs, section, numero, projection='l93'):
         return None, f'Erreur archive: {e}'
 
 
-_ortho_layer_name: str | None = None
+_ortho_layer_name = None
 
 def _discover_ortho_layer() -> str:
     """Découvre dynamiquement le calque orthophoto courant via GetCapabilities."""
