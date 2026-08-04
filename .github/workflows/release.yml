@@ -1,0 +1,68 @@
+name: Package & release Context Generator
+
+# Se déclenche en poussant un tag "v*" (ex: v1.0, v1.1) — construit un ZIP
+# contenant uniquement les fichiers essentiels de SCRIPTS/CONTEXT GENERATOR/
+# et le publie comme asset attaché à une Release GitHub.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build package
+        run: |
+          set -e
+          SRC="SCRIPTS/CONTEXT GENERATOR"
+          PKG="cadastre-tool"
+          mkdir -p "$PKG/frontend"
+
+          cp "$SRC/server.py"          "$PKG/"
+          cp "$SRC/requirements.txt"   "$PKG/"
+          cp "$SRC/frontend/index.html" "$PKG/frontend/"
+          cp "$SRC/lancer sous mac os.command" "$PKG/"
+          cp "$SRC/lancer sous windows.bat"    "$PKG/"
+          chmod +x "$PKG/lancer sous mac os.command"
+
+          cat > "$PKG/INSTALLER.txt" << 'EOF'
+          CADASTRE TOOL — Installation
+          ==============================
+
+          MACOS
+          ------
+          1. Double-clic sur « lancer sous mac os.command »
+             Si macOS bloque le fichier : clic-droit → Ouvrir → Ouvrir quand même
+             (protection Gatekeeper normale pour les fichiers téléchargés)
+
+          2. L'outil installe automatiquement ses dépendances Python
+             (première ouverture : 1-2 minutes selon la connexion)
+
+          3. L'interface s'ouvre dans le navigateur sur http://localhost:5057
+
+          WINDOWS
+          --------
+          1. Double-clic sur « lancer sous windows.bat »
+          2. L'outil installe automatiquement ses dépendances Python
+          3. L'interface s'ouvre dans le navigateur sur http://localhost:5057
+
+          PRÉ-REQUIS
+          -----------
+          Python 3.10 ou supérieur — https://www.python.org
+          Sur macOS : disponible via https://www.python.org ou `brew install python3`
+          Sur Windows : cocher "Add Python to PATH" lors de l'installation
+          EOF
+
+          zip -r "cadastre-tool-${GITHUB_REF_NAME}.zip" "$PKG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cadastre-tool-${{ github.ref_name }}.zip
+          generate_release_notes: true
