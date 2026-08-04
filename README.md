@@ -10,22 +10,15 @@
 
 ## Français
 
-Dépôt regroupant les scripts d'automatisation Archicad (via l'add-on [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation)) et les outils cadastraux associés, développés pour l'agence.
+Scripts d'automatisation Archicad (add-on [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation)) et outils cadastraux, pour l'agence.
 
-> ⚠️ **Portée géographique** : ces scripts s'appuient sur des données et API publiques françaises (IGN, BD TOPO, RGE ALTI, cadastre data.gouv.fr) et ne fonctionnent donc, en l'état, que sur le territoire français. Ils peuvent en revanche servir de base pour une adaptation à d'autres pays, à condition de remplacer les sources de données par leurs équivalents locaux.
+> ⚠️ Données françaises uniquement (IGN, BD TOPO, RGE ALTI, cadastre) — adaptable à d'autres pays en remplaçant les sources.
 
-### Scripts
+### [Context Generator](SCRIPTS/CONTEXT%20GENERATOR) — [📦 Télécharger le ZIP](../../releases/latest/download/cadastre-tool.zip)
 
-#### [`SCRIPTS/CONTEXT GENERATOR`](SCRIPTS/CONTEXT%20GENERATOR)
+Sélectionne un périmètre cadastral, télécharge les DXF PCI, et génère terrain + parcelles + bâtiments directement dans Archicad via Tapir.
 
-Outil web local (Flask + Leaflet) qui permet de :
-- sélectionner un périmètre cadastral sur une carte,
-- identifier et télécharger les feuilles PCI (DXF) correspondantes depuis data.gouv.fr,
-- générer directement dans Archicad, via Tapir : un maillage de terrain géoréférencé (RGE ALTI/LiDAR HD), les limites de parcelles cadastrales, et les bâtiments existants (hauteur BD TOPO), en coordonnées locales relatives à un point d'ancrage.
-
-**Téléchargement** : pour un usage sans git, téléchargez le ZIP prêt à l'emploi depuis la [page Releases](../../releases) (contient uniquement les fichiers nécessaires + scripts de lancement). Sinon, lancement direct depuis ce dépôt via `SCRIPTS/CONTEXT GENERATOR/lancer sous mac os.command` (macOS) ou `lancer sous windows.bat` (Windows).
-
-| Sélection du périmètre et des parcelles | Résultat dans Archicad (vue 3D) |
+| Sélection | Résultat dans Archicad |
 |---|---|
 | ![Sélection dans l'outil web](docs/images/webapp-selection.png) | ![Vue 3D Archicad](docs/images/archicad-3d-view.png) |
 
@@ -33,21 +26,14 @@ Outil web local (Flask + Leaflet) qui permet de :
 
 ## English
 
-Repository gathering Archicad automation scripts (via the [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation) add-on) and related cadastral tools, developed for the agency.
+Archicad automation scripts (via the [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation) add-on) and cadastral tools, for the agency.
 
-> ⚠️ **Geographic scope**: these scripts rely on French public data and APIs (IGN, BD TOPO, RGE ALTI, data.gouv.fr cadastre) and therefore only work within France as-is. They can, however, serve as a starting point for adapting to other countries, provided the data sources are swapped for local equivalents.
+> ⚠️ France-only data (IGN, BD TOPO, RGE ALTI, cadastre) — adaptable to other countries by swapping the data sources.
 
-### Scripts
+### [Context Generator](SCRIPTS/CONTEXT%20GENERATOR) — [📦 Download the ZIP](../../releases/latest/download/cadastre-tool.zip)
 
-#### [`SCRIPTS/CONTEXT GENERATOR`](SCRIPTS/CONTEXT%20GENERATOR)
+Selects a cadastral perimeter, downloads the PCI DXF files, and generates terrain + parcels + buildings directly inside Archicad via Tapir.
 
-Local web tool (Flask + Leaflet) that lets you:
-- select a cadastral perimeter on a map,
-- identify and download the matching PCI cadastral sheets (DXF) from data.gouv.fr,
-- generate directly inside Archicad, via Tapir: a georeferenced terrain mesh (RGE ALTI/LiDAR HD elevation data), cadastral parcel boundaries, and existing buildings (BD TOPO height), all in local coordinates relative to an anchor point.
-
-**Download**: for a git-free setup, grab the ready-to-use ZIP from the [Releases page](../../releases) (contains only the necessary files + launch scripts). Otherwise, launch directly from this repo via `SCRIPTS/CONTEXT GENERATOR/lancer sous mac os.command` (macOS) or `lancer sous windows.bat` (Windows).
-
-| Perimeter and parcel selection | Result in Archicad (3D view) |
+| Selection | Result in Archicad |
 |---|---|
 | ![Web app selection](docs/images/webapp-selection.png) | ![Archicad 3D view](docs/images/archicad-3d-view.png) |
