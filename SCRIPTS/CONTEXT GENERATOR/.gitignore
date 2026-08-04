@@ -1,0 +1,16 @@
+# Environnement Python — recréé automatiquement au lancement
+.venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Fichiers générés (téléchargements temporaires)
+downloads/
+
+# Sauvegardes locales manuelles (hors historique git)
+backups/
+
+# Fichiers système
+.DS_Store
+Thumbs.db
