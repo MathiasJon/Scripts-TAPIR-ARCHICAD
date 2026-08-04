@@ -39,6 +39,16 @@ exit /b 1
 :python_found
 for /f "tokens=*" %%v in ('%PYTHON% --version 2^>^&1') do echo Python detecte : %%v
 
+REM — Avertissement (non bloquant) si Python < 3.10 : version cible de
+REM   developpement, les versions anterieures peuvent buguer.
+%PYTHON% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo AVERTISSEMENT : cet outil est developpe/teste pour Python 3.10+.
+    echo   Une version anterieure peut fonctionner mais n'est pas garantie sans bug.
+    echo.
+)
+
 REM — Créer l'environnement virtuel si besoin —
 if not exist ".venv\Scripts\pip.exe" (
     echo.

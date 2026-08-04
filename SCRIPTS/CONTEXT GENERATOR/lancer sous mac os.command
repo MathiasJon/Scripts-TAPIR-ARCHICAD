@@ -10,6 +10,16 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Avertissement (non bloquant) si Python < 3.10 : version cible de développement,
+# les versions antérieures n'ont pas toutes été testées et peuvent buguer.
+PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+PY_OK=$(python3 -c 'import sys; print(1 if sys.version_info >= (3, 10) else 0)')
+if [ "$PY_OK" != "1" ]; then
+    echo "⚠ Python $PY_VER détecté — cet outil est développé/testé pour Python 3.10+."
+    echo "  Des versions antérieures peuvent fonctionner mais ne sont pas garanties sans bug."
+    echo ""
+fi
+
 # Créer l'environnement virtuel si besoin, puis synchroniser les dépendances
 if [ ! -d ".venv" ]; then
     echo "Première utilisation — création de l'environnement..."
