@@ -25,6 +25,10 @@ Outil web local (Flask + Leaflet) qui permet de :
 
 Lancement : voir `SCRIPTS/CONTEXT GENERATOR/lancer sous mac os.command` (macOS) ou `lancer sous windows.bat` (Windows). Détails dans `SCRIPTS/CONTEXT GENERATOR/CLAUDE.md`.
 
+| Sélection du périmètre et des parcelles | Résultat dans Archicad (vue 3D) |
+|---|---|
+| ![Sélection dans l'outil web](docs/images/webapp-selection.png) | ![Vue 3D Archicad](docs/images/archicad-3d-view.png) |
+
 ---
 
 ## English
@@ -43,3 +47,7 @@ Local web tool (Flask + Leaflet) that lets you:
 - generate directly inside Archicad, via Tapir: a georeferenced terrain mesh (RGE ALTI/LiDAR HD elevation data), cadastral parcel boundaries, and existing buildings (BD TOPO height), all in local coordinates relative to an anchor point.
 
 To launch: see `SCRIPTS/CONTEXT GENERATOR/lancer sous mac os.command` (macOS) or `lancer sous windows.bat` (Windows). Details in `SCRIPTS/CONTEXT GENERATOR/CLAUDE.md`.
+
+| Perimeter and parcel selection | Result in Archicad (3D view) |
+|---|---|
+| ![Web app selection](docs/images/webapp-selection.png) | ![Archicad 3D view](docs/images/archicad-3d-view.png) |
