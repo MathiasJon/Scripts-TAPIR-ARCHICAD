@@ -1,0 +1,1535 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cadastre PCI — Téléchargement DXF</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Helvetica Neue', Arial, sans-serif;
+      font-size: 13px;
+      background: #f5f4f2;
+      color: #222;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    header {
+      background: #1a1a1a;
+      color: #fff;
+      padding: 0 20px;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+    header span { color: #888; font-size: 12px; }
+
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 320px;
+      background: #fff;
+      border-right: 1px solid #e0dedd;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid #efefef;
+    }
+
+    .sidebar-section h2 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #888;
+      margin-bottom: 10px;
+    }
+
+    /* Search */
+    .search-row {
+      display: flex;
+      gap: 6px;
+    }
+    #search-input {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      font-size: 12px;
+      outline: none;
+    }
+    #search-input:focus { border-color: #1a1a1a; }
+
+    .btn {
+      padding: 7px 12px;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #333; }
+    .btn:disabled { background: #aaa; cursor: default; }
+    .btn-secondary {
+      background: #fff;
+      color: #1a1a1a;
+      border: 1px solid #ccc;
+    }
+    .btn-secondary:hover { background: #f5f5f5; }
+    .btn-success {
+      background: #2d6a4f;
+    }
+    .btn-success:hover { background: #1e4d38; }
+
+    #search-results {
+      margin-top: 6px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      display: none;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+    #search-results .result-item {
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    #search-results .result-item:hover { background: #f5f4f2; }
+    #search-results .result-item:last-child { border-bottom: none; }
+
+    #parcelle-commune-results {
+      margin-top: -2px;
+      margin-bottom: 6px;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      display: none;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    #parcelle-commune-results .result-item {
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    #parcelle-commune-results .result-item:hover { background: #f5f4f2; }
+    #parcelle-commune-results .result-item:last-child { border-bottom: none; }
+    #parcelle-commune.resolved { border-color: #2d6a4f; color: #2d6a4f; }
+
+    /* Draw tools */
+    .tool-row {
+      display: flex;
+      gap: 6px;
+    }
+    .tool-row .btn {
+      flex: 1;
+      text-align: center;
+    }
+
+    /* Feuilles */
+    #feuilles-section {
+      padding: 0;
+    }
+    #feuilles-header {
+      padding: 16px 16px 8px;
+      border-bottom: 1px solid #efefef;
+    }
+    #feuilles-header h2 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #888;
+    }
+    #feuilles-header .count {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    #feuilles-list { padding: 8px 0; }
+
+    .feuille-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    .feuille-item:hover { background: #f9f8f7; }
+    .feuille-item input[type=checkbox] {
+      width: 14px; height: 14px;
+      flex-shrink: 0;
+      cursor: pointer;
+      accent-color: #1a1a1a;
+    }
+    .feuille-label { font-size: 12px; font-family: monospace; font-weight: 600; }
+    .feuille-sub { font-size: 11px; color: #888; margin-top: 1px; }
+
+    /* Status */
+    #status {
+      padding: 10px 16px;
+      font-size: 11px;
+      color: #555;
+      border-top: 1px solid #efefef;
+      min-height: 34px;
+      background: #fafafa;
+    }
+    #status.error { color: #b00; }
+    #status.success { color: #2d6a4f; }
+    #status.loading::before { content: '⟳ '; }
+
+    /* Download bar */
+    #download-bar {
+      padding: 12px 16px;
+      border-top: 1px solid #e0dedd;
+      display: none;
+    }
+    #ortho-error {
+      display: none;
+      margin-bottom: 8px;
+      padding: 7px 10px;
+      background: #fff0f0;
+      border: 1px solid #f5c6c6;
+      border-radius: 3px;
+      font-size: 11px;
+      color: #b00;
+      word-break: break-word;
+    }
+    #download-bar .btn-success { width: 100%; text-align: center; }
+
+    .ortho-option {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: #555;
+      cursor: pointer;
+      user-select: none;
+    }
+    .ortho-option input { accent-color: #1a1a1a; cursor: pointer; flex-shrink: 0; }
+    .ortho-hint { color: #999; }
+
+    .proj-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .proj-btn {
+      flex: 1;
+      padding: 5px 8px;
+      font-size: 11px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #555;
+      cursor: pointer;
+      text-align: center;
+      user-select: none;
+      transition: background 0.1s;
+    }
+    .proj-btn.active {
+      background: #1a1a1a;
+      color: #fff;
+      border-color: #1a1a1a;
+    }
+    .sub-option {
+      display: none;
+      padding-left: 20px;
+      margin-top: -4px;
+      margin-bottom: 8px;
+    }
+
+    /* ── Map ── */
+    .map-wrapper {
+      position: relative;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    #map {
+      flex: 1;
+      min-height: 0;
+      background: #e8e4de;
+    }
+
+    /* Spinner overlay */
+    .overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(255,255,255,0.7);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      font-size: 13px;
+      color: #555;
+    }
+    .overlay.visible { display: flex; }
+
+    .print-frame-label-icon {
+      background: transparent !important;
+      border: none !important;
+    }
+    .print-frame-label {
+      box-sizing: content-box;
+      position: absolute;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid #c0392b;
+      color: #c0392b;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 8px;
+      white-space: nowrap;
+      text-align: center;
+      cursor: move;
+      user-select: none;
+      transform: translate(-50%, -50%);
+    }
+
+    .phase-header {
+      padding: 12px 16px;
+      background: #1a1a1a;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <h1>Cadastre PCI</h1>
+    <span>Téléchargement et fusion DXF</span>
+  </header>
+
+  <div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar">
+
+    <div id="phase-selection">
+      <div class="phase-header">1 · Sélection</div>
+
+      <!-- Recherche d'adresse -->
+      <div class="sidebar-section">
+        <h2>Recherche d'adresse</h2>
+        <div class="search-row">
+          <input type="text" id="search-input" placeholder="Saisir une adresse…" autocomplete="off"/>
+          <button class="btn" onclick="searchAddress()">Chercher</button>
+        </div>
+        <div id="search-results"></div>
+      </div>
+
+      <!-- Recherche de parcelle -->
+      <div class="sidebar-section">
+        <h2>Recherche de parcelle</h2>
+        <div class="search-row" style="margin-bottom:6px;position:relative;">
+          <input type="text" id="parcelle-commune" placeholder="Commune…" autocomplete="off"/>
+        </div>
+        <div id="parcelle-commune-results"></div>
+        <div class="search-row">
+          <input type="text" id="parcelle-section" placeholder="Section (ex: AE)" autocomplete="off" style="flex:0 0 40%;min-width:0;"/>
+          <input type="text" id="parcelle-numero" placeholder="N° parcelle (ex: 195;196;200)" autocomplete="off" style="flex:1;min-width:0;"/>
+        </div>
+        <button class="btn" style="margin-top:6px;width:100%;" onclick="searchParcelle()">Chercher la parcelle</button>
+        <p style="margin-top:6px;font-size:11px;color:#888;">
+          Sans dessiner de périmètre, cherche sur la zone visible de la carte.
+        </p>
+      </div>
+
+      <!-- Format d'impression (A3) -->
+      <div class="sidebar-section">
+        <h2>Format d'impression</h2>
+        <div class="proj-row">
+          <div class="proj-btn active" id="scale-500" onclick="setPrintScale(500)">1/500</div>
+          <div class="proj-btn" id="scale-1000" onclick="setPrintScale(1000)">1/1000</div>
+        </div>
+        <p style="margin-top:2px;font-size:11px;color:#888;">A3 horizontal (420 × 297 mm)</p>
+        <div class="tool-row" style="margin-top:8px;">
+          <button class="btn btn-secondary" onclick="showPrintFrame()">Centrer ici</button>
+          <button class="btn btn-secondary" onclick="hidePrintFrame()">Masquer</button>
+        </div>
+      </div>
+
+      <!-- Calques de risque -->
+      <div class="sidebar-section">
+        <h2>Calques de risque</h2>
+        <label class="ortho-option" style="margin-bottom:0;">
+          <input type="checkbox" id="chk-inond" onchange="toggleRiskLayer('inond', this.checked)"/>
+          Zones inondables
+          <span class="ortho-hint">— Aléas fréquents et centennaux</span>
+        </label>
+      </div>
+
+      <!-- Outils de dessin -->
+      <div class="sidebar-section">
+        <h2>Délimiter le périmètre</h2>
+        <div class="tool-row">
+          <button class="btn btn-secondary" id="btn-rect" onclick="activateRect()">Rectangle</button>
+          <button class="btn btn-secondary" id="btn-poly" onclick="activatePoly()">Polygone</button>
+          <button class="btn btn-secondary" onclick="clearDrawing()">Effacer</button>
+        </div>
+        <p style="margin-top:8px;font-size:11px;color:#888;">
+          Dessinez un périmètre puis cliquez sur "Identifier".
+        </p>
+        <div style="margin-top:8px;">
+          <button class="btn" id="btn-identify" disabled onclick="identifyFeuilles()">
+            Identifier les feuilles
+          </button>
+        </div>
+      </div>
+    </div><!-- /phase-selection -->
+
+    <div id="phase-generation" style="display:none;">
+      <div class="phase-header" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>2 · Génération</span>
+        <button class="btn btn-secondary" style="font-size:11px;padding:3px 8px;" onclick="backToSelection()">← Modifier</button>
+      </div>
+
+      <!-- Calques complémentaires IGN -->
+      <div class="sidebar-section" style="display:none;">
+        <h2>Calques complémentaires</h2>
+        <label class="ortho-option" style="display:none;">
+          <input type="checkbox" id="chk-routes" disabled onchange="toggleIgnLayer('routes', this.checked)"/>
+          Routes
+          <span class="ortho-hint">— BD TOPO IGN (désactivé temporairement)</span>
+        </label>
+        <label class="ortho-option" style="display:none;">
+          <input type="checkbox" id="chk-vegetation" disabled onchange="toggleIgnLayer('vegetation', this.checked)"/>
+          Végétation
+          <span class="ortho-hint">— BD TOPO IGN (désactivé temporairement)</span>
+        </label>
+        <label class="ortho-option" style="display:none;">
+          <input type="checkbox" id="chk-courbes" disabled onchange="toggleIgnLayer('courbes', this.checked)"/>
+          Courbes de niveau
+          <span class="ortho-hint">— IGN altimétrie (désactivé temporairement)</span>
+        </label>
+        <div style="margin-top:8px;display:none;">
+          <div style="font-size:12px;margin-bottom:4px;">Arbres <span class="ortho-hint">— OpenStreetMap</span></div>
+          <button class="btn btn-secondary" disabled style="font-size:11px;padding:4px 8px;width:100%;" onclick="fetchArbres()">Charger les arbres (zone visible)</button>
+        </div>
+      </div>
+
+      <!-- Liste des feuilles -->
+      <div id="feuilles-section">
+        <div id="feuilles-header" style="display:none;">
+          <h2>Feuilles cadastrales</h2>
+          <div class="count" id="feuilles-count"></div>
+          <div style="margin-top:8px;display:flex;gap:6px;">
+            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="selectAll(true)">Tout sélectionner</button>
+            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="selectAll(false)">Tout désélectionner</button>
+          </div>
+        </div>
+        <div id="feuilles-list"></div>
+      </div>
+
+      <!-- Sélection Archicad : parcelles + point d'ancrage -->
+      <div id="archicad-selection-group" style="border-bottom:1px solid #efefef;">
+        <div style="padding:16px 16px 4px;">
+          <h2 style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:#888;">Sélection pour Archicad</h2>
+          <p style="margin-top:6px;font-size:11px;color:#888;">
+            1 · Choisissez les parcelles à projeter sur le terrain (cliquez sur la carte). 2 · Placez le point d'ancrage sur l'un de leurs coins.
+          </p>
+        </div>
+
+        <!-- Étape 1 : parcelles -->
+        <div id="parcelles-section">
+          <div id="parcelles-header" style="display:none;padding:0 16px 16px;">
+            <div style="font-size:11px;font-weight:600;color:#555;">① Parcelles à projeter <span class="count" id="parcelles-count" style="font-weight:400;color:#888;"></span></div>
+            <div style="margin-top:8px;display:flex;gap:6px;">
+              <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="selectAllParcelles(true)">Tout sélectionner</button>
+              <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="selectAllParcelles(false)">Tout désélectionner</button>
+            </div>
+            <div id="parcelles-selection-count" style="margin-top:8px;font-size:11px;color:#2d6a4f;font-weight:600;"></div>
+          </div>
+        </div>
+
+        <!-- Étape 2 : point d'ancrage -->
+        <div id="anchor-section" style="display:none;padding:0 16px 16px;">
+          <div style="font-size:11px;font-weight:600;color:#555;">② Point d'ancrage</div>
+          <p style="margin-top:6px;font-size:11px;color:#888;">
+            Cliquez près d'un coin d'une parcelle sélectionnée : le point se cale automatiquement dessus. Glissez-le ensuite pour l'ajuster.
+          </p>
+          <div class="tool-row" style="margin-top:8px;">
+            <button class="btn btn-secondary" id="btn-anchor" disabled onclick="toggleAnchorMode()">Placer le point</button>
+            <button class="btn btn-secondary" onclick="resetAnchor()">Réinitialiser</button>
+          </div>
+          <div id="anchor-coords" style="margin-top:8px;font-size:11px;color:#2d6a4f;font-weight:600;font-family:monospace;"></div>
+        </div>
+      </div>
+
+      <!-- Barre téléchargement -->
+      <div id="download-bar">
+        <div id="ortho-error"></div>
+        <div class="proj-row">
+          <div class="proj-btn active" id="proj-l93" onclick="setProjection('l93')">Lambert 93</div>
+          <div class="proj-btn" id="proj-cc" onclick="setProjection('cc')">CC — Coniques Conformes</div>
+        </div>
+        <label class="ortho-option">
+          <input type="checkbox" id="chk-hatches" onchange="onHatchesChange()"/>
+          Générer hachures bâtiments
+          <span class="ortho-hint">— 3BATIDUR · 3BATILEGER</span>
+        </label>
+        <div class="sub-option" id="hatch-color-option">
+          <label class="ortho-option" style="margin-bottom:0;">
+            <input type="checkbox" id="chk-hatch-color" checked onchange="updateDownloadBtn()"/>
+            Forcer couleur de base
+            <span class="ortho-hint">— noir / gris (sinon bylayer)</span>
+          </label>
+        </div>
+        <label class="ortho-option" id="ortho-option-row">
+          <input type="checkbox" id="chk-ortho" onchange="updateDownloadBtn()"/>
+          Inclure orthophoto IGN
+          <span class="ortho-hint" id="ortho-hint-text">— ZIP (DXF + JPEG ~20 cm/px)</span>
+        </label>
+        <label class="ortho-option" style="display:none;">
+          <input type="checkbox" id="chk-voirie" disabled onchange="updateDownloadBtn()"/>
+          Générer chaussée/trottoir
+          <span class="ortho-hint">— désactivé temporairement</span>
+        </label>
+        <button class="btn btn-secondary" disabled style="display:none;" onclick="previewVoirie()">Prévisualiser sur la carte</button>
+        <label class="ortho-option" style="display:none;">
+          <input type="checkbox" id="chk-heights" disabled onchange="updateDownloadBtn()"/>
+          Annoter hauteur des bâtiments
+          <span class="ortho-hint">— désactivé temporairement</span>
+        </label>
+        <button class="btn btn-success" id="btn-download" onclick="downloadMerged()">
+          Télécharger le DXF fusionné
+        </button>
+      </div>
+
+      <!-- Génération Archicad (Tapir) -->
+      <div class="sidebar-section">
+        <h2>Générer dans Archicad</h2>
+        <p style="margin-top:2px;font-size:11px;color:#888;">
+          Nécessite un point d'ancrage placé (phase 2). Géoréférence le projet (Point de Repère = coordonnées L93 réelles de l'ancrage), génère le maillage de terrain (RGE ALTI/LiDAR HD) et un maillage par bâtiment cadastral (hauteur BD TOPO, 3 m par défaut), en coordonnées locales relatives à l'ancrage.
+        </p>
+        <label class="ortho-option" style="margin-top:8px;">
+          <input type="checkbox" id="chk-solid-ops" checked/>
+          Opération d'éléments solides (terrain − bâtiments)
+          <span class="ortho-hint">— ⚠ peut faire buguer le maillage, désactivez en cas de souci</span>
+        </label>
+        <button class="btn btn-success" id="btn-archicad" disabled style="margin-top:8px;width:100%;" onclick="generateArchicad()">
+          Générer dans Archicad
+        </button>
+        <button class="btn btn-secondary" id="btn-archicad-cancel" style="margin-top:6px;width:100%;display:none;" onclick="cancelArchicad()">
+          Annuler
+        </button>
+        <div id="archicad-status" style="margin-top:8px;font-size:11px;color:#2d6a4f;font-weight:600;"></div>
+      </div>
+    </div><!-- /phase-generation -->
+
+      <!-- Statut -->
+      <div id="status">Prêt.</div>
+
+    </div><!-- /sidebar -->
+
+    <!-- Carte -->
+    <div class="map-wrapper">
+      <div id="map"></div>
+      <div class="overlay" id="overlay">Chargement en cours…</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+  <script>
+  // ── Map init ──────────────────────────────────────────────────────────────
+  const map = L.map('map').setView([48.8566, 2.3522], 13);
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap, © CartoDB',
+    maxZoom: 20
+  }).addTo(map);
+
+  // Layer pour les formes dessinées
+  const drawnLayer = new L.FeatureGroup();
+  map.addLayer(drawnLayer);
+
+  // Layer pour les feuilles cadastrales affichées
+  const feuillesLayer = new L.FeatureGroup();
+  map.addLayer(feuillesLayer);
+
+  // Layer pour les parcelles cadastrales affichées
+  const parcellesLayer = new L.FeatureGroup();
+  map.addLayer(parcellesLayer);
+
+  // Draw controls
+  const drawControl = new L.Control.Draw({
+    draw: {
+      rectangle: { shapeOptions: { color: '#1a1a1a', weight: 2 } },
+      polygon: { shapeOptions: { color: '#1a1a1a', weight: 2 }, allowIntersection: false },
+      polyline: false, circle: false, circlemarker: false, marker: false,
+    },
+    edit: { featureGroup: drawnLayer, remove: false }
+  });
+  map.addControl(drawControl);
+
+  let currentShape = null;
+  let feuillesData = [];
+  let parcellesData = [];
+  let shapeBbox = null;
+  let rectHandler = null, polyHandler = null;
+
+  map.on(L.Draw.Event.CREATED, e => {
+    drawnLayer.clearLayers();
+    drawnLayer.addLayer(e.layer);
+    currentShape = e.layer;
+    document.getElementById('btn-identify').disabled = false;
+    setStatus('Périmètre tracé. Cliquez sur "Identifier les feuilles".');
+    rectHandler = null; polyHandler = null;
+    updateBtnState();
+  });
+
+  function activateRect() {
+    if (rectHandler) { rectHandler.disable(); rectHandler = null; updateBtnState(); return; }
+    polyHandler && polyHandler.disable();
+    rectHandler = new L.Draw.Rectangle(map, drawControl.options.draw.rectangle);
+    rectHandler.enable();
+    updateBtnState();
+  }
+  function activatePoly() {
+    if (polyHandler) { polyHandler.disable(); polyHandler = null; updateBtnState(); return; }
+    rectHandler && rectHandler.disable();
+    polyHandler = new L.Draw.Polygon(map, drawControl.options.draw.polygon);
+    polyHandler.enable();
+    updateBtnState();
+  }
+  function updateBtnState() {
+    document.getElementById('btn-rect').style.background = rectHandler ? '#333' : '';
+    document.getElementById('btn-rect').style.color = rectHandler ? '#fff' : '';
+    document.getElementById('btn-poly').style.background = polyHandler ? '#333' : '';
+    document.getElementById('btn-poly').style.color = polyHandler ? '#fff' : '';
+  }
+  function clearDrawing() {
+    drawnLayer.clearLayers();
+    feuillesLayer.clearLayers();
+    parcellesLayer.clearLayers();
+    voirieLayer.clearLayers();
+    currentShape = null;
+    feuillesData = [];
+    parcellesData = [];
+    selectedParcelleIdus.clear();
+    parcelleLayerByIdu.clear();
+    shapeBbox = null;
+    document.getElementById('btn-identify').disabled = true;
+    document.getElementById('feuilles-header').style.display = 'none';
+    document.getElementById('feuilles-list').innerHTML = '';
+    document.getElementById('parcelles-header').style.display = 'none';
+    document.getElementById('parcelles-selection-count').textContent = '';
+    document.getElementById('download-bar').style.display = 'none';
+    document.getElementById('anchor-section').style.display = 'none';
+    document.getElementById('btn-anchor').disabled = true;
+    resetAnchor();
+    setStatus('Périmètre effacé.');
+  }
+
+  // ── Recherche d'adresse ──────────────────────────────────────────────────
+  const searchInput = document.getElementById('search-input');
+  searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchAddress(); });
+
+  let searchTimer = null;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    const q = searchInput.value.trim();
+    if (q.length < 3) { document.getElementById('search-results').style.display = 'none'; return; }
+    searchTimer = setTimeout(searchAddress, 300);
+  });
+
+  async function searchAddress() {
+    const q = searchInput.value.trim();
+    if (!q) return;
+    setStatus('Recherche…', 'loading');
+    try {
+      const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=6`);
+      const d = await r.json();
+      const box = document.getElementById('search-results');
+      box.innerHTML = '';
+      if (!d.features || !d.features.length) {
+        box.style.display = 'none';
+        setStatus('Aucun résultat.', 'error');
+        return;
+      }
+      d.features.forEach(f => {
+        const el = document.createElement('div');
+        el.className = 'result-item';
+        el.textContent = f.properties.label;
+        el.onclick = () => {
+          const [lng, lat] = f.geometry.coordinates;
+          map.setView([lat, lng], 17);
+          box.style.display = 'none';
+          searchInput.value = f.properties.label;
+          setStatus(`Centré sur : ${f.properties.label}`);
+        };
+        box.appendChild(el);
+      });
+      box.style.display = 'block';
+      setStatus('Prêt.');
+    } catch (e) {
+      setStatus('Erreur de géocodage.', 'error');
+    }
+  }
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.search-row') && !e.target.closest('#search-results')) {
+      document.getElementById('search-results').style.display = 'none';
+    }
+  });
+
+  // ── Identification des feuilles + parcelles ─────────────────────────────
+  async function identifyFeuilles() {
+    if (!currentShape) return;
+    setStatus('Identification des feuilles et parcelles cadastrales…', 'loading');
+    showOverlay(true);
+
+    const geojson = currentShape.toGeoJSON().geometry;
+    const b = currentShape.getBounds();
+    shapeBbox = { lon_min: b.getWest(), lat_min: b.getSouth(), lon_max: b.getEast(), lat_max: b.getNorth() };
+
+    try {
+      const [feuillesResp, parcellesResp] = await Promise.all([
+        fetch('/api/feuilles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ geojson })
+        }),
+        fetch('/api/parcelles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ geojson })
+        }),
+      ]);
+      const d = await feuillesResp.json();
+      if (!feuillesResp.ok) throw new Error(d.error || 'Erreur serveur');
+
+      feuillesData = d.feuilles;
+      renderFeuilles(feuillesData, d.at_limit);
+      showFeuillsOnMap(feuillesData);
+
+      let msg = d.at_limit
+        ? `⚠ Limite atteinte : ${d.count} feuilles affichées (résultat peut être incomplet — réduisez le périmètre).`
+        : `${d.count} feuille(s) identifiée(s).`;
+
+      const dp = await parcellesResp.json();
+      if (parcellesResp.ok) {
+        parcellesData = dp.parcelles;
+        renderParcelles(parcellesData, dp.at_limit);
+        showParcellesOnMap(parcellesData);
+        msg += ` ${dp.count} parcelle(s) trouvée(s)${dp.at_limit ? ' (limite atteinte)' : ''}.`;
+      }
+
+      setStatus(msg, d.at_limit ? 'error' : 'success');
+      document.getElementById('download-bar').style.display = feuillesData.length ? 'block' : 'none';
+      document.getElementById('anchor-section').style.display = feuillesData.length ? 'block' : 'none';
+      if (feuillesData.length) showGenerationPhase();
+    } catch (e) {
+      setStatus('Erreur : ' + e.message, 'error');
+    } finally {
+      showOverlay(false);
+    }
+  }
+
+  // ── Parcelles : affichage carte + sélection additive au clic ─────────────
+  const PARCELLE_STYLE          = { color: '#1a6fb0', weight: 1.2, fillOpacity: 0.05, fillColor: '#1a6fb0' };
+  const PARCELLE_STYLE_SELECTED = { color: '#e05d26', weight: 2,   fillOpacity: 0.35, fillColor: '#e05d26' };
+
+  let selectedParcelleIdus = new Set();
+  let parcelleLayerByIdu = new Map();
+
+  function renderParcelles(parcelles, atLimit) {
+    const header = document.getElementById('parcelles-header');
+    const count  = document.getElementById('parcelles-count');
+
+    if (!parcelles.length) {
+      header.style.display = 'none';
+      return;
+    }
+    header.style.display = 'block';
+    count.innerHTML = atLimit
+      ? `<span style="color:#b00;">⚠ ${parcelles.length} parcelles — limite atteinte, réduisez le périmètre</span>`
+      : `${parcelles.length} parcelle(s) affichée(s)`;
+    updateParcelleSelectionCount();
+  }
+
+  function updateParcelleSelectionCount() {
+    const el = document.getElementById('parcelles-selection-count');
+    el.textContent = selectedParcelleIdus.size
+      ? `${selectedParcelleIdus.size} parcelle(s) sélectionnée(s)`
+      : '';
+    const btn = document.getElementById('btn-anchor');
+    const hasSelection = selectedParcelleIdus.size > 0;
+    btn.disabled = !hasSelection;
+    if (!hasSelection && anchorMode) toggleAnchorMode();
+    updateArchicadButtonState();
+  }
+
+  function getSelectedParcelles() {
+    return parcellesData.filter(p => selectedParcelleIdus.has(p.idu));
+  }
+
+  function toggleParcelleSelection(p) {
+    if (selectedParcelleIdus.has(p.idu)) {
+      selectedParcelleIdus.delete(p.idu);
+    } else {
+      selectedParcelleIdus.add(p.idu);
+    }
+    const layer = parcelleLayerByIdu.get(p.idu);
+    if (layer) layer.setStyle(selectedParcelleIdus.has(p.idu) ? PARCELLE_STYLE_SELECTED : PARCELLE_STYLE);
+    updateParcelleSelectionCount();
+    document.getElementById('download-bar').style.display = 'block';
+  }
+
+  function selectAllParcelles(val) {
+    parcellesData.forEach(p => {
+      if (val) selectedParcelleIdus.add(p.idu); else selectedParcelleIdus.delete(p.idu);
+      const layer = parcelleLayerByIdu.get(p.idu);
+      if (layer) layer.setStyle(val ? PARCELLE_STYLE_SELECTED : PARCELLE_STYLE);
+    });
+    updateParcelleSelectionCount();
+  }
+
+  function showParcellesOnMap(parcelles) {
+    parcellesLayer.clearLayers();
+    parcelleLayerByIdu.clear();
+    parcelles.forEach(p => {
+      if (!p.geometry) return;
+      const isSelected = selectedParcelleIdus.has(p.idu);
+      const layer = L.geoJSON(p.geometry, {
+        style: isSelected ? PARCELLE_STYLE_SELECTED : PARCELLE_STYLE
+      });
+      const tip = (p.nom_com || p.code_insee) + ' — ' + p.section + p.numero;
+      layer.bindTooltip(tip, { permanent: false, direction: 'center' });
+      layer.on('click', e => {
+        if (anchorMode) {
+          L.DomEvent.stop(e);
+          const snapped = findNearestParcelleVertex(e.latlng);
+          placeAnchor(snapped || e.latlng);
+          toggleAnchorMode();
+          return;
+        }
+        toggleParcelleSelection(p);
+      });
+      parcelleLayerByIdu.set(p.idu, layer);
+      parcellesLayer.addLayer(layer);
+    });
+  }
+
+  // ── Point d'ancrage Archicad (marqueur déplaçable, aimanté aux sommets) ──
+  const anchorIcon = L.divIcon({
+    className: 'anchor-marker',
+    html: '<div style="width:14px;height:14px;border-radius:50%;background:#d92b2b;border:2px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>',
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+  });
+
+  let anchorMode = false;
+  let anchorMarker = null;
+
+  function toggleAnchorMode() {
+    anchorMode = !anchorMode;
+    const btn = document.getElementById('btn-anchor');
+    btn.textContent = anchorMode ? 'Cliquez sur la carte…' : 'Placer le point';
+    btn.style.background = anchorMode ? '#333' : '';
+    btn.style.color = anchorMode ? '#fff' : '';
+    map.getContainer().style.cursor = anchorMode ? 'crosshair' : '';
+  }
+
+  // Cherche le sommet de parcelle le plus proche du clic (dans un rayon de 12 px écran)
+  function findNearestParcelleVertex(latlng) {
+    const clickPt = map.latLngToContainerPoint(latlng);
+    let best = null, bestDist = Infinity;
+    parcellesData.forEach(p => {
+      if (!p.geometry || !selectedParcelleIdus.has(p.idu)) return;
+      const rings = p.geometry.type === 'MultiPolygon'
+        ? p.geometry.coordinates.flat()
+        : p.geometry.coordinates;
+      rings.forEach(ring => {
+        ring.forEach(([lon, lat]) => {
+          const pt = map.latLngToContainerPoint([lat, lon]);
+          const d = clickPt.distanceTo(pt);
+          if (d < bestDist) { bestDist = d; best = L.latLng(lat, lon); }
+        });
+      });
+    });
+    return best;
+  }
+
+  function placeAnchor(latlng) {
+    if (anchorMarker) map.removeLayer(anchorMarker);
+    anchorMarker = L.marker(latlng, { icon: anchorIcon, draggable: true }).addTo(map);
+    anchorMarker.on('drag', e => {
+      const snapped = findNearestParcelleVertex(e.target.getLatLng());
+      if (snapped) e.target.setLatLng(snapped);
+      updateAnchorCoords();
+    });
+    anchorMarker.on('dragend', updateAnchorCoords);
+    updateAnchorCoords();
+  }
+
+  function updateAnchorCoords() {
+    const el = document.getElementById('anchor-coords');
+    if (!anchorMarker) { el.innerHTML = ''; return; }
+    const ll = anchorMarker.getLatLng();
+    const gmaps = `https://www.google.com/maps?q=${ll.lat},${ll.lng}`;
+    // Le lien Géoportail exige "permalink=yes" + une couche de base (l0=...) pour
+    // que "c="/"z=" soient réellement pris en compte, sinon la dernière vue affichée
+    // reste inchangée (constaté : sans ces paramètres, le lien ignorait les
+    // coordonnées et affichait un tout autre endroit).
+    const geoportail = `https://www.geoportail.gouv.fr/carte?c=${ll.lng},${ll.lat}`
+      + `&z=18&l0=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2::GEOPORTAIL:OGC:WMTS(1)&permalink=yes`;
+    el.innerHTML = `Lat=${ll.lat.toFixed(6)} Lon=${ll.lng.toFixed(6)}`
+      + ` — <a href="${gmaps}" target="_blank" rel="noopener">Google Maps</a>`
+      + ` · <a href="${geoportail}" target="_blank" rel="noopener">Géoportail</a>`;
+    updateArchicadButtonState();
+  }
+
+  function resetAnchor() {
+    if (anchorMarker) { map.removeLayer(anchorMarker); anchorMarker = null; }
+    document.getElementById('anchor-coords').textContent = '';
+    if (anchorMode) toggleAnchorMode();
+    updateArchicadButtonState();
+  }
+
+  // Génération Archicad impossible sans au moins une parcelle sélectionnée ET
+  // un point d'ancrage placé (l'ancrage lui-même n'a de sens que calé sur une
+  // parcelle sélectionnée).
+  function updateArchicadButtonState() {
+    const btn = document.getElementById('btn-archicad');
+    if (!btn) return;
+    const ready = selectedParcelleIdus.size > 0 && !!anchorMarker;
+    btn.disabled = !ready;
+    btn.title = ready ? '' : "Sélectionnez au moins une parcelle et placez le point d'ancrage.";
+  }
+
+  map.on('click', e => {
+    if (!anchorMode) return;
+    const snapped = findNearestParcelleVertex(e.latlng);
+    placeAnchor(snapped || e.latlng);
+    toggleAnchorMode();
+  });
+
+  // ── Recherche directe d'une parcelle (commune + section + numéro) ───────
+  let parcelleCommuneInsee = null;
+
+  const communeInput = document.getElementById('parcelle-commune');
+  const communeResults = document.getElementById('parcelle-commune-results');
+  let communeTimer = null;
+
+  communeInput.addEventListener('input', () => {
+    parcelleCommuneInsee = null;
+    communeInput.classList.remove('resolved');
+    clearTimeout(communeTimer);
+    const q = communeInput.value.trim();
+    if (q.length < 2) { communeResults.style.display = 'none'; return; }
+    communeTimer = setTimeout(() => searchCommune(q), 300);
+  });
+
+  async function searchCommune(q) {
+    try {
+      const r = await fetch(`https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(q)}&fields=code,nom,codesPostaux&boost=population&limit=6`);
+      const list = await r.json();
+      communeResults.innerHTML = '';
+      if (!Array.isArray(list) || !list.length) { communeResults.style.display = 'none'; return; }
+      list.forEach(c => {
+        const el = document.createElement('div');
+        el.className = 'result-item';
+        const cp = (c.codesPostaux && c.codesPostaux[0]) || '';
+        el.textContent = `${c.nom} (${cp || c.code})`;
+        el.onclick = () => {
+          communeInput.value = c.nom;
+          parcelleCommuneInsee = c.code;
+          communeInput.classList.add('resolved');
+          communeResults.style.display = 'none';
+        };
+        communeResults.appendChild(el);
+      });
+      communeResults.style.display = 'block';
+    } catch (e) {
+      communeResults.style.display = 'none';
+    }
+  }
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#parcelle-commune') && !e.target.closest('#parcelle-commune-results')) {
+      communeResults.style.display = 'none';
+    }
+  });
+
+  function boundsToGeoJson(bounds) {
+    const w = bounds.getWest(), e = bounds.getEast(), s = bounds.getSouth(), n = bounds.getNorth();
+    return { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] };
+  }
+
+  const communeContourCache = new Map();
+  async function fetchCommuneContour(codeInsee) {
+    if (communeContourCache.has(codeInsee)) return communeContourCache.get(codeInsee);
+    const r = await fetch(`https://geo.api.gouv.fr/communes/${codeInsee}?fields=contour`);
+    const d = await r.json();
+    const contour = d.contour || null;
+    communeContourCache.set(codeInsee, contour);
+    return contour;
+  }
+
+  async function searchParcelle() {
+    const section = document.getElementById('parcelle-section').value.trim();
+    const numero  = document.getElementById('parcelle-numero').value.trim();
+
+    if (!parcelleCommuneInsee && !currentShape) {
+      setStatus('Choisissez une commune dans la liste (ou dessinez un périmètre).', 'error');
+      return;
+    }
+
+    // Priorité : périmètre dessiné > contour de la commune sélectionnée (indépendant
+    // de la vue actuelle de la carte) > zone visible de la carte en dernier recours.
+    // Chercher seulement sur la zone visible faisait échouer silencieusement la
+    // recherche par section/numéro si la carte n'était pas déjà centrée sur la bonne
+    // commune au moment de la recherche (confirmé : une parcelle bien réelle donnait
+    // "aucune parcelle trouvée" simplement parce que la carte regardait ailleurs).
+    let geojson;
+    if (currentShape) {
+      geojson = currentShape.toGeoJSON().geometry;
+    } else if (parcelleCommuneInsee) {
+      geojson = await fetchCommuneContour(parcelleCommuneInsee);
+      if (!geojson) geojson = boundsToGeoJson(map.getBounds());
+    } else {
+      geojson = boundsToGeoJson(map.getBounds());
+    }
+
+    setStatus('Recherche de la parcelle…', 'loading');
+    showOverlay(true);
+    try {
+      const body = { geojson, section, numero };
+      if (parcelleCommuneInsee) body.code_insee = parcelleCommuneInsee;
+      const r = await fetch('/api/parcelles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Erreur serveur');
+      if (!d.parcelles.length) {
+        setStatus('Aucune parcelle trouvée pour ces critères.', 'error');
+        return;
+      }
+
+      // Fusionne avec les parcelles déjà affichées (dédoublonnage par idu)
+      const existingIdus = new Set(parcellesData.map(p => p.idu));
+      d.parcelles.forEach(p => { if (!existingIdus.has(p.idu)) parcellesData.push(p); });
+
+      // Sélectionne automatiquement les parcelles trouvées (sélection additive)
+      d.parcelles.forEach(p => selectedParcelleIdus.add(p.idu));
+
+      renderParcelles(parcellesData, false);
+      showParcellesOnMap(parcellesData);
+
+      const layer = L.geoJSON(d.parcelles[0].geometry);
+      map.fitBounds(layer.getBounds(), { maxZoom: 19 });
+
+      document.getElementById('download-bar').style.display = 'block';
+      setStatus(`${d.parcelles.length} parcelle(s) trouvée(s) et sélectionnée(s).`, 'success');
+    } catch (e) {
+      setStatus('Erreur : ' + e.message, 'error');
+    } finally {
+      showOverlay(false);
+    }
+  }
+
+  function renderFeuilles(feuilles, atLimit) {
+    const header = document.getElementById('feuilles-header');
+    const list   = document.getElementById('feuilles-list');
+    const count  = document.getElementById('feuilles-count');
+
+    if (!feuilles.length) {
+      header.style.display = 'none';
+      list.innerHTML = '<p style="padding:16px;color:#888;font-size:12px;">Aucune feuille trouvée dans ce périmètre.</p>';
+      return;
+    }
+
+    header.style.display = 'block';
+    count.innerHTML = atLimit
+      ? `<span style="color:#b00;">⚠ ${feuilles.length} feuilles — limite atteinte, résultat incomplet</span>`
+      : `${feuilles.length} feuille(s) trouvée(s)`;
+    list.innerHTML = '';
+
+    feuilles.forEach((f, i) => {
+      const commune = f.nom_com || f.code_insee;
+      const item = document.createElement('div');
+      item.className = 'feuille-item';
+      item.innerHTML = `
+        <input type="checkbox" id="f${i}" data-idx="${i}" checked/>
+        <label for="f${i}" style="cursor:pointer;flex:1;">
+          <div class="feuille-label">${commune} — ${f.section}${f.numero}</div>
+          <div class="feuille-sub">${f.code_postal || f.code_insee} — Section ${f.section} — Feuille ${f.numero}</div>
+        </label>
+      `;
+      item.querySelector('input').onchange = updateDownloadBtn;
+      list.appendChild(item);
+    });
+    updateDownloadBtn();
+  }
+
+  function selectAll(val) {
+    document.querySelectorAll('#feuilles-list input[type=checkbox]').forEach(cb => cb.checked = val);
+    updateDownloadBtn();
+  }
+  let currentProjection = 'l93';
+
+  function setProjection(proj) {
+    currentProjection = proj;
+    document.getElementById('proj-l93').classList.toggle('active', proj === 'l93');
+    document.getElementById('proj-cc').classList.toggle('active', proj === 'cc');
+    const orthoRow = document.getElementById('ortho-option-row');
+    const orthoHint = document.getElementById('ortho-hint-text');
+    if (proj === 'cc') {
+      orthoRow.style.opacity = '0.4';
+      orthoRow.style.pointerEvents = 'none';
+      document.getElementById('chk-ortho').checked = false;
+      orthoHint.textContent = '— non disponible en CC';
+    } else {
+      orthoRow.style.opacity = '';
+      orthoRow.style.pointerEvents = '';
+      orthoHint.textContent = '— ZIP (DXF + JPEG ~20 cm/px)';
+    }
+    updateDownloadBtn();
+  }
+
+  function onHatchesChange() {
+    const checked = document.getElementById('chk-hatches').checked;
+    document.getElementById('hatch-color-option').style.display = checked ? 'block' : 'none';
+    updateDownloadBtn();
+  }
+
+  function updateDownloadBtn() {
+    const checked = document.querySelectorAll('#feuilles-list input[type=checkbox]:checked').length;
+    const bar = document.getElementById('download-bar');
+    bar.style.display = checked ? 'block' : 'none';
+    if (!checked) return;
+    const withOrtho = document.getElementById('chk-ortho').checked;
+    document.getElementById('btn-download').textContent = withOrtho
+      ? `Télécharger ${checked} feuille(s) + orthophoto (ZIP)`
+      : `Télécharger ${checked} feuille(s) fusionnée(s)`;
+  }
+
+  function showFeuillsOnMap(feuilles) {
+    feuillesLayer.clearLayers();
+    feuilles.forEach(f => {
+      if (!f.geometry) return;
+      const layer = L.geoJSON(f.geometry, {
+        style: { color: '#e05d26', weight: 1.5, fillOpacity: 0.08, fillColor: '#e05d26' }
+      });
+      const tip = (f.nom_com || f.code_insee) + ' — ' + f.section + f.numero;
+      layer.bindTooltip(tip, { permanent: false, direction: 'center' });
+      feuillesLayer.addLayer(layer);
+    });
+  }
+
+  // ── Téléchargement & fusion ──────────────────────────────────────────────
+  async function downloadMerged() {
+    const checkboxes = document.querySelectorAll('#feuilles-list input[type=checkbox]:checked');
+    const selected = Array.from(checkboxes).map(cb => feuillesData[parseInt(cb.dataset.idx)]);
+    if (!selected.length) return;
+
+    setStatus(`Téléchargement de ${selected.length} feuille(s) en cours…`, 'loading');
+    showOverlay(true);
+
+    const withOrtho      = document.getElementById('chk-ortho').checked;
+    const withHatches    = document.getElementById('chk-hatches').checked;
+    const hatchForceColor = withHatches && document.getElementById('chk-hatch-color').checked;
+    const selectedParcelles = getSelectedParcelles();
+    const anchorPoint = anchorMarker
+      ? { lon: anchorMarker.getLatLng().lng, lat: anchorMarker.getLatLng().lat }
+      : null;
+    const withVoirie  = document.getElementById('chk-voirie').checked;
+    const withHeights = document.getElementById('chk-heights').checked;
+    try {
+      const r = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feuilles:                  selected,
+          parcelles:                 selectedParcelles,
+          anchor_point:              anchorPoint,
+          projection:                currentProjection,
+          include_ortho:             withOrtho,
+          add_hatches:               withHatches,
+          hatch_force_color:         hatchForceColor,
+          shape_bbox:                shapeBbox,
+          generate_voirie:           withVoirie,
+          add_building_heights:      withHeights,
+          perimeter_geojson:         currentShape ? currentShape.toGeoJSON().geometry : null,
+          all_parcelles_in_perimeter: parcellesData,
+        })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error + (d.details ? ' — ' + d.details.join(', ') : ''));
+
+      // Déclenchement du téléchargement
+      const a = document.createElement('a');
+      a.href = `/api/result/${d.token}`;
+      a.download = d.filename;
+      a.click();
+
+      const orthoErr = document.getElementById('ortho-error');
+      const orthoErrors = (d.errors || []).filter(e => e.includes('Orthophoto'));
+      const otherErrors = (d.errors || []).filter(e => !e.includes('Orthophoto'));
+      if (orthoErrors.length) {
+        orthoErr.textContent = '⚠ Orthophoto non disponible : ' + orthoErrors[0];
+        orthoErr.style.display = 'block';
+      } else {
+        orthoErr.style.display = 'none';
+      }
+      let msg = d.has_ortho
+        ? `ZIP prêt : ${d.downloaded.length} feuille(s) + orthophoto IGN.`
+        : `DXF prêt : ${d.downloaded.length} feuille(s) fusionnée(s).`;
+      if (d.anchor_l93) {
+        msg += ` Point d'ancrage inclus (X=${d.anchor_l93.x.toFixed(2)} Y=${d.anchor_l93.y.toFixed(2)} L93).`;
+      }
+      if (otherErrors.length) msg += ` Avertissements : ${otherErrors.join('; ')}`;
+      setStatus(msg, 'success');
+    } catch (e) {
+      setStatus('Erreur : ' + e.message, 'error');
+    } finally {
+      showOverlay(false);
+    }
+  }
+
+  // ── Génération Archicad (Tapir) ──────────────────────────────────────────
+  async function generateArchicad() {
+    const checkboxes = document.querySelectorAll('#feuilles-list input[type=checkbox]:checked');
+    const selected = Array.from(checkboxes).map(cb => feuillesData[parseInt(cb.dataset.idx)]);
+    if (!selected.length) {
+      setStatus('Sélectionnez au moins une feuille.', 'error');
+      return;
+    }
+    if (!anchorMarker) {
+      setStatus("Placez d'abord un point d'ancrage (section ci-dessus).", 'error');
+      return;
+    }
+    if (!selectedParcelleIdus.size) {
+      setStatus("Sélectionnez au moins une parcelle avant de générer.", 'error');
+      return;
+    }
+
+    const selectedParcellesGeojson = getSelectedParcelles().map(p => p.geometry);
+    if (!currentShape) {
+      setStatus('Périmètre manquant.', 'error');
+      return;
+    }
+
+    const statusEl = document.getElementById('archicad-status');
+    statusEl.textContent = '';
+    setStatus('Génération dans Archicad en cours (peut prendre un moment)…', 'loading');
+    showOverlay(true);
+    document.getElementById('btn-archicad').disabled = true;
+    document.getElementById('btn-archicad-cancel').style.display = 'block';
+
+    const progressTimer = setInterval(async () => {
+      try {
+        const pr = await fetch('/api/archicad/progress');
+        const p = await pr.json();
+        statusEl.textContent = p.total ? `${p.stage} ${p.done}/${p.total}` : p.stage;
+      } catch (e) { /* silencieux — juste un indicateur */ }
+    }, 800);
+
+    try {
+      const r = await fetch('/api/archicad/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          anchor_point:      { lon: anchorMarker.getLatLng().lng, lat: anchorMarker.getLatLng().lat },
+          perimeter_geojson: currentShape.toGeoJSON().geometry,
+          feuilles:          selected,
+          parcels_scope:     'selected',
+          parcelles_geojson: selectedParcellesGeojson,
+          solid_operations:  document.getElementById('chk-solid-ops').checked,
+        })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Erreur serveur');
+
+      let msg = d.cancelled
+        ? `Annulé — Terrain : ${d.mesh_points} points, ${d.buildings} bâtiment(s) créé(s) avant l'arrêt.`
+        : `Terrain : ${d.mesh_points} points — Bâtiments : ${d.buildings} maillage(s) créé(s).`;
+      statusEl.textContent = msg;
+      if (d.errors && d.errors.length) {
+        msg += ` Avertissements : ${d.errors.join('; ')}`;
+      }
+      setStatus(msg, d.errors && d.errors.length ? 'error' : 'success');
+    } catch (e) {
+      setStatus('Erreur Archicad : ' + e.message, 'error');
+    } finally {
+      clearInterval(progressTimer);
+      showOverlay(false);
+      document.getElementById('btn-archicad').disabled = false;
+      document.getElementById('btn-archicad-cancel').style.display = 'none';
+    }
+  }
+
+  async function cancelArchicad() {
+    document.getElementById('btn-archicad-cancel').disabled = true;
+    try {
+      await fetch('/api/archicad/cancel', { method: 'POST' });
+      setStatus('Annulation demandée…', 'loading');
+    } catch (e) {
+      setStatus('Erreur annulation : ' + e.message, 'error');
+    } finally {
+      document.getElementById('btn-archicad-cancel').disabled = false;
+    }
+  }
+
+  // ── Calques de risque BRGM ──────────────────────────────────────────────
+  const BRGM_WMS = 'https://mapsref.brgm.fr/wxs/georisques/errial_risques';
+  const riskLayers = {};
+
+  function toggleRiskLayer(type, on) {
+    if (riskLayers[type]) {
+      map.removeLayer(riskLayers[type]);
+      delete riskLayers[type];
+    }
+    if (on) {
+      const layerName = 'ALEA_SYNT_INOND_01FOR,ALEA_SYNT_INOND_02MOY';
+      riskLayers[type] = L.tileLayer.wms(BRGM_WMS, {
+        layers: layerName,
+        format: 'image/png',
+        transparent: true,
+        version: '1.3.0',
+        opacity: 0.7,
+        attribution: '© BRGM / Géorisques'
+      });
+      riskLayers[type].addTo(map);
+    }
+  }
+
+  // ── Calques complémentaires IGN (BD TOPO + altimétrie) ───────────────────
+  const IGN_LAYERS = {
+    routes:     { url: 'https://data.geopf.fr/wms-v/wms', layer: 'BDTOPO-GEOPO-RESEAU_ROUTIER_WLD_WGS84G',  attribution: '© IGN — BD TOPO' },
+    vegetation: { url: 'https://data.geopf.fr/wms-v/wms', layer: 'BDTOPO-GEOPO-VEGETATION_WLD_WGS84G',       attribution: '© IGN — BD TOPO' },
+    courbes:    { url: 'https://data.geopf.fr/wms-r',     layer: 'ELEVATION.CONTOUR.LINE',                  attribution: '© IGN — Courbes de niveau' },
+  };
+  const ignLayers = {};
+
+  function toggleIgnLayer(type, on) {
+    if (ignLayers[type]) {
+      map.removeLayer(ignLayers[type]);
+      delete ignLayers[type];
+    }
+    if (on) {
+      const cfg = IGN_LAYERS[type];
+      ignLayers[type] = L.tileLayer.wms(cfg.url, {
+        layers: cfg.layer,
+        format: 'image/png',
+        transparent: true,
+        version: '1.3.0',
+        opacity: 0.8,
+        attribution: cfg.attribution,
+      });
+      ignLayers[type].addTo(map);
+    }
+  }
+
+  // ── Calque Arbres (OpenStreetMap, via proxy Overpass) ───────────────────
+  // Chargement manuel uniquement (bouton) — pas de rafraîchissement automatique
+  // au déplacement de la carte, pour éviter de déclencher le rate-limit d'Overpass.
+  const arbresLayer = new L.FeatureGroup();
+  map.addLayer(arbresLayer);
+  const ARBRES_MAX_AREA_KM2 = 3;
+  let arbresRequestId = 0;
+
+  function boundsAreaKm2(b) {
+    const w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
+    const widthKm  = L.latLng(s, w).distanceTo(L.latLng(s, e)) / 1000;
+    const heightKm = L.latLng(s, w).distanceTo(L.latLng(n, w)) / 1000;
+    return widthKm * heightKm;
+  }
+
+  async function fetchArbres() {
+    const requestId = ++arbresRequestId;
+    const b = map.getBounds();
+    if (boundsAreaKm2(b) > ARBRES_MAX_AREA_KM2) {
+      arbresLayer.clearLayers();
+      setStatus('Zone trop grande pour afficher les arbres — zoomez davantage.', 'error');
+      return;
+    }
+    setStatus('Chargement des arbres…', 'loading');
+    try {
+      const r = await fetch(`/api/arbres?lat_min=${b.getSouth()}&lon_min=${b.getWest()}&lat_max=${b.getNorth()}&lon_max=${b.getEast()}`);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Erreur serveur');
+      if (requestId !== arbresRequestId) return; // une demande plus récente a déjà été lancée
+      arbresLayer.clearLayers();
+      d.arbres.forEach(a => {
+        const marker = L.circleMarker([a.lat, a.lon], {
+          radius: 4, color: '#2d6a4f', weight: 1, fillOpacity: 0.7, fillColor: '#52b788'
+        });
+        const tip = a.espece ? `${a.espece}${a.hauteur ? ' — ' + a.hauteur + ' m' : ''}` : 'Arbre';
+        marker.bindTooltip(tip, { permanent: false, direction: 'top' });
+        arbresLayer.addLayer(marker);
+      });
+      setStatus(`${d.arbres.length} arbre(s) affiché(s).`, 'success');
+    } catch (e) {
+      if (requestId !== arbresRequestId) return;
+      setStatus('Erreur arbres : ' + e.message, 'error');
+    }
+  }
+
+  // ── Prévisualisation chaussée/trottoir (approximatif) ────────────────────
+  const voirieLayer = new L.FeatureGroup();
+  map.addLayer(voirieLayer);
+
+  async function previewVoirie() {
+    if (!currentShape) {
+      setStatus('Dessinez un périmètre avant de prévisualiser la voirie.', 'error');
+      return;
+    }
+    setStatus('Calcul de la chaussée/trottoir…', 'loading');
+    showOverlay(true);
+    try {
+      const r = await fetch('/api/voirie', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          perimeter_geojson:          currentShape.toGeoJSON().geometry,
+          all_parcelles_in_perimeter: parcellesData,
+        })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Erreur serveur');
+
+      voirieLayer.clearLayers();
+      if (d.chaussee) {
+        L.geoJSON(d.chaussee, { style: { color: '#5a5a5a', weight: 1, fillOpacity: 0.5, fillColor: '#5a5a5a' } })
+          .bindTooltip('Chaussée (approx.)', { sticky: true })
+          .addTo(voirieLayer);
+      }
+      if (d.trottoir) {
+        L.geoJSON(d.trottoir, { style: { color: '#c8c3b9', weight: 1, fillOpacity: 0.5, fillColor: '#c8c3b9' } })
+          .bindTooltip('Trottoir (approx.)', { sticky: true })
+          .addTo(voirieLayer);
+      }
+      if (!d.chaussee && !d.trottoir) {
+        setStatus('Aucune route trouvée sur ce périmètre.', 'error');
+      } else {
+        setStatus('Aperçu chaussée/trottoir affiché (approximatif).', 'success');
+      }
+    } catch (e) {
+      setStatus('Erreur voirie : ' + e.message, 'error');
+    } finally {
+      showOverlay(false);
+    }
+  }
+
+  // ── Cadre de format d'impression (A3 horizontal, à l'échelle, déplaçable) ─
+  const A3_WIDTH_MM  = 420;
+  const A3_HEIGHT_MM = 297;
+  let printScale = 500;
+  let printFrame = null;
+  let printFrameHandle = null;
+
+  function computePrintFrameBounds(center) {
+    const widthM  = (A3_WIDTH_MM  / 1000) * printScale;
+    const heightM = (A3_HEIGHT_MM / 1000) * printScale;
+    const metersPerDegLat = 111320;
+    const metersPerDegLon = 111320 * Math.cos(center.lat * Math.PI / 180);
+    const dLat = (heightM / 2) / metersPerDegLat;
+    const dLon = (widthM  / 2) / metersPerDegLon;
+    return { bounds: [[center.lat - dLat, center.lng - dLon], [center.lat + dLat, center.lng + dLon]], widthM, heightM };
+  }
+
+  // Ne touche qu'au rectangle (jamais à la poignée elle-même, pour ne pas
+  // interférer avec son propre état de drag interne pendant qu'on la glisse).
+  function redrawRectangle(center) {
+    const { bounds, widthM, heightM } = computePrintFrameBounds(center);
+    if (printFrame) map.removeLayer(printFrame);
+    printFrame = L.rectangle(bounds, {
+      color: '#c0392b', weight: 2, fill: false, dashArray: '8,5', interactive: false,
+    }).addTo(map);
+    return { widthM, heightM };
+  }
+
+  function makeLabelIcon(widthM, heightM) {
+    return L.divIcon({
+      className: 'print-frame-label-icon',
+      html: `<div class="print-frame-label">A3 horizontal — 1/${printScale}<br>${widthM.toFixed(0)} × ${heightM.toFixed(0)} m</div>`,
+      iconSize: [0, 0],
+    });
+  }
+
+  function showPrintFrame() {
+    const center = map.getCenter();
+    const { widthM, heightM } = redrawRectangle(center);
+    const labelIcon = makeLabelIcon(widthM, heightM);
+    if (printFrameHandle) {
+      printFrameHandle.setLatLng(center);
+      printFrameHandle.setIcon(labelIcon);
+    } else {
+      printFrameHandle = L.marker(center, { icon: labelIcon, draggable: true, zIndexOffset: 10000 }).addTo(map);
+      printFrameHandle.on('drag', e => redrawRectangle(e.target.getLatLng()));
+    }
+  }
+
+  function setPrintScale(scale) {
+    printScale = scale;
+    document.getElementById('scale-500').classList.toggle('active', scale === 500);
+    document.getElementById('scale-1000').classList.toggle('active', scale === 1000);
+    if (!printFrame) return;
+    const center = printFrame.getBounds().getCenter();
+    const { widthM, heightM } = redrawRectangle(center);
+    printFrameHandle.setIcon(makeLabelIcon(widthM, heightM));
+  }
+
+  function hidePrintFrame() {
+    if (printFrame) { map.removeLayer(printFrame); printFrame = null; }
+    if (printFrameHandle) { map.removeLayer(printFrameHandle); printFrameHandle = null; }
+  }
+
+  // ── Bascule entre les phases Sélection / Génération ──────────────────────
+  function showGenerationPhase() {
+    document.getElementById('phase-selection').style.display = 'none';
+    document.getElementById('phase-generation').style.display = 'block';
+  }
+  function backToSelection() {
+    document.getElementById('phase-generation').style.display = 'none';
+    document.getElementById('phase-selection').style.display = 'block';
+  }
+
+  // ── Utilitaires ──────────────────────────────────────────────────────────
+  function setStatus(msg, cls = '') {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = cls;
+  }
+  function showOverlay(v) {
+    document.getElementById('overlay').classList.toggle('visible', v);
+  }
+  </script>
+</body>
+</html>
