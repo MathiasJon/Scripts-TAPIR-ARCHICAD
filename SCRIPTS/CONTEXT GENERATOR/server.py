@@ -8,6 +8,7 @@ import tempfile
 import threading
 import uuid
 import zipfile
+from collections import OrderedDict
 from flask import Flask, request, jsonify, send_file, send_from_directory
 import requests
 import ezdxf
@@ -86,6 +87,14 @@ def _tapir_run_command(command, parameters=None, timeout=90):
     response = result.get('addOnCommandResponse') if result else None
     if response and 'error' in response:
         raise RuntimeError(f"Tapir [{command}]: {response['error']}")
+    # Les commandes par lot (ex: ModifyMeshes) renvoient 'executionResults' — un
+    # succès global n'empêche pas un élément individuel d'échouer silencieusement
+    # (constaté : holes rejetés sans autre signal que success=False ici). On lève
+    # donc une erreur si AU MOINS UN élément du lot a échoué.
+    if response and 'executionResults' in response:
+        failed = [r for r in response['executionResults'] if not r.get('success', True)]
+        if failed:
+            raise RuntimeError(f"Tapir [{command}]: {len(failed)} élément(s) en échec — {failed[0].get('error')}")
     return response
 
 def _bbox_wgs84_to_l93(lon_min, lat_min, lon_max, lat_max):
@@ -198,7 +207,49 @@ def _fetch_elevation_grid_l93(min_x, min_y, max_x, max_y, spacing_m=1.0):
             idx += 1
         rows.append(row)
     rows = _fill_missing_grid_z(rows)
+    rows = _despike_grid_z(rows)
     return rows, spacing_m
+
+
+def _despike_grid_z(rows, threshold=2.0, agreement=1.0):
+    """
+    Corrige les pics isolés d'une seule case (végétation non filtrée du LiDAR HD,
+    typiquement) : si une case s'écarte de plus de 'threshold' de la médiane de
+    ses 4 voisines immédiates, ET que ces voisines sont elles-mêmes cohérentes
+    entre elles (écart max-min < 'agreement', donc pas une vraie pente/rupture de
+    terrain), on la remplace par cette médiane. Un vrai talus/mur affecte
+    plusieurs cases voisines à la fois (les voisines ne seraient alors pas
+    cohérentes entre elles), donc n'est pas touché.
+    """
+    n_rows = len(rows)
+    n_cols = len(rows[0]) if rows else 0
+    if n_rows < 3 or n_cols < 3:
+        return rows
+
+    grid = [[rows[j][i][2] for i in range(n_cols)] for j in range(n_rows)]
+    new_grid = [row[:] for row in grid]
+    for j in range(n_rows):
+        for i in range(n_cols):
+            z = grid[j][i]
+            if z is None:
+                continue
+            neighbors = [
+                grid[nj][ni]
+                for dj, di in ((-1, 0), (1, 0), (0, -1), (0, 1))
+                for nj, ni in [(j + dj, i + di)]
+                if 0 <= nj < n_rows and 0 <= ni < n_cols and grid[nj][ni] is not None
+            ]
+            if len(neighbors) < 4:
+                continue
+            neighbors_sorted = sorted(neighbors)
+            median = (neighbors_sorted[1] + neighbors_sorted[2]) / 2
+            if abs(z - median) > threshold and (max(neighbors) - min(neighbors)) < agreement:
+                new_grid[j][i] = median
+
+    return [
+        [(rows[j][i][0], rows[j][i][1], new_grid[j][i]) for i in range(n_cols)]
+        for j in range(n_rows)
+    ]
 
 
 def _fill_missing_grid_z(rows):
@@ -791,6 +842,117 @@ def get_voirie():
     })
 
 
+def _housenumber_sort_key(num):
+    """Tri numérique des numéros de voirie, avec suffixes (12bis, 11ter...) après le nombre nu."""
+    m = re.match(r'(\d+)(.*)', num)
+    return (int(m.group(1)), m.group(2)) if m else (10**9, num)
+
+
+def _reverse_geocode(lon, lat):
+    r = requests.get('https://api-adresse.data.gouv.fr/reverse/', params={'lon': lon, 'lat': lat}, timeout=15)
+    r.raise_for_status()
+    features = r.json().get('features', [])
+    return features[0]['properties'] if features else None
+
+
+@app.route('/api/archicad/compute_address', methods=['POST'])
+def archicad_compute_address():
+    """
+    Géolocalise inversement un point par parcelle sélectionnée (ou un point
+    unique, ex. l'ancrage), puis compose une adresse groupée : numéros joints
+    par "/" pour une même rue, rues distinctes jointes par " - "
+    (ex: "5/7 rue de Lorraine - 3 Avenue Montaigne"). Retourne des champs
+    éditables, à valider/corriger côté interface avant export réel.
+    """
+    data = request.get_json() or {}
+    points = data.get('points') or []
+    if not points:
+        return jsonify({'error': 'points requis (au moins un {lon, lat})'}), 400
+
+    try:
+        results = [_reverse_geocode(p['lon'], p['lat']) for p in points]
+    except requests.RequestException as e:
+        return jsonify({'error': f'Erreur API Adresse : {e}'}), 502
+
+    results = [p for p in results if p]
+    if not results:
+        return jsonify({'error': "Aucune adresse trouvée à ces emplacements."}), 404
+
+    streets = OrderedDict()  # nom de rue → liste de numéros (ordre d'apparition, dédoublonnée)
+    city = postcode = ''
+    for p in results:
+        street = p.get('street') or p.get('name') or ''
+        housenumber = p.get('housenumber', '')
+        if not city:
+            city = p.get('city', '')
+        if not postcode:
+            postcode = p.get('postcode', '')
+        nums = streets.setdefault(street, [])
+        if housenumber and housenumber not in nums:
+            nums.append(housenumber)
+
+    street_parts = []
+    for street, nums in streets.items():
+        if nums:
+            nums_sorted = sorted(nums, key=_housenumber_sort_key)
+            street_parts.append(f"{'/'.join(nums_sorted)} {street}")
+        else:
+            street_parts.append(street)
+    address1 = ' - '.join(p for p in street_parts if p)
+    city = city.upper()
+
+    full_address = ' '.join(p for p in (address1, postcode, city) if p)
+
+    # Proposition de nom de projet : "NOM DE VILLE xx Nom de rue" (éditable).
+    project_name = ' '.join(p for p in (city, address1) if p)
+
+    return jsonify({
+        'address1':      address1,
+        'city':          city,
+        'postcode':      postcode,
+        'country':       'France',
+        'full_address':  full_address,
+        'project_name':  project_name,
+    })
+
+
+@app.route('/api/archicad/export_address', methods=['POST'])
+def archicad_export_address():
+    """
+    Pousse les champs d'adresse (déjà décidés/édités côté interface, cf.
+    /api/archicad/compute_address) dans les Infos Projet du fichier Archicad
+    actuellement ouvert.
+    """
+    data = request.get_json() or {}
+    address1     = (data.get('address1') or '').strip()
+    city         = (data.get('city') or '').strip()
+    postcode     = (data.get('postcode') or '').strip()
+    country      = (data.get('country') or '').strip()
+    project_name = (data.get('project_name') or '').strip()
+    full_address = (data.get('full_address') or ' '.join(p for p in (address1, postcode, city) if p)).strip()
+
+    fields_to_set = {
+        'SITEFULLADDRESS': full_address,
+        'SITEADDRESS1':    address1,
+        'SITECITY':        city,
+        'SITEPOSTCODE':    postcode,
+        'SITECOUNTRY':     country,
+        'PROJECTNAME':     project_name,
+    }
+
+    try:
+        for field_id, value in fields_to_set.items():
+            if value:
+                _tapir_run_command('SetProjectInfoField', {
+                    'projectInfoId': field_id,
+                    'projectInfoValue': value,
+                })
+    except Exception as e:
+        return jsonify({'error': f'Archicad injoignable ou aucun projet ouvert : {e}'}), 502
+
+    return jsonify({'address': full_address, 'project_name': project_name})
+
+
 @app.route('/api/archicad/progress', methods=['GET'])
 def archicad_progress():
     """Avancement de la génération Archicad en cours (pour affichage en direct)."""
@@ -802,6 +964,114 @@ def archicad_cancel():
     """Demande l'arrêt d'une génération Archicad en cours (voir _archicad_cancel)."""
     _archicad_cancel.set()
     return jsonify({'ok': True})
+
+
+@app.route('/api/archicad/contour_points', methods=['POST'])
+def archicad_contour_points():
+    """
+    Points d'altimétrie tous les ~2,5 m sur le contour ET l'intérieur des
+    parcelles données (RGE ALTI/LiDAR HD) — pour affichage sur la carte
+    (dégradé de couleur sur toute l'emprise, pas seulement le pourtour) et
+    sélection précise de l'altimétrie de référence (clic = valeur manuelle).
+    """
+    data = request.get_json() or {}
+    parcelles_geojson = data.get('parcelles_geojson') or []
+    if not parcelles_geojson:
+        return jsonify({'error': 'parcelles_geojson requis'}), 400
+
+    SPACING = 2.5
+    MAX_POINTS = 1500  # garde-fou : élargit le pas si trop de points (grandes emprises)
+    points_l93 = []
+    for geom in parcelles_geojson:
+        shp = _to_l93(geom).buffer(0)
+        polys = [shp] if shp.geom_type == 'Polygon' else list(shp.geoms)
+        for poly in polys:
+            # Contour.
+            coords = list(poly.exterior.coords)
+            for i in range(len(coords) - 1):
+                x0, y0 = coords[i]
+                x1, y1 = coords[i + 1]
+                seg_len = math.hypot(x1 - x0, y1 - y0)
+                n = max(1, int(seg_len // SPACING))
+                for k in range(n):
+                    t = k / n
+                    points_l93.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+
+            # Intérieur : grille régulière, ne garder que les points dans le polygone.
+            min_x, min_y, max_x, max_y = poly.bounds
+            x = min_x + SPACING
+            while x < max_x:
+                y = min_y + SPACING
+                while y < max_y:
+                    if poly.contains(_ShapelyPoint(x, y)):
+                        points_l93.append((x, y))
+                    y += SPACING
+                x += SPACING
+
+    if len(points_l93) > MAX_POINTS:
+        step = len(points_l93) // MAX_POINTS + 1
+        points_l93 = points_l93[::step]
+
+    # Dédoublonnage grossier (coins partagés entre segments consécutifs).
+    seen = set()
+    unique_l93 = []
+    for x, y in points_l93:
+        key = (round(x, 1), round(y, 1))
+        if key not in seen:
+            seen.add(key)
+            unique_l93.append((x, y))
+
+    lonlat = [_l93_to_wgs84.transform(x, y) for x, y in unique_l93]
+    elevations = _batch_point_elevations(lonlat)
+
+    points = [
+        {'lon': lon, 'lat': lat, 'z': z}
+        for (lon, lat), z in zip(lonlat, elevations) if z is not None
+    ]
+    return jsonify({'points': points})
+
+
+@app.route('/api/archicad/elevation_stats', methods=['POST'])
+def archicad_elevation_stats():
+    """
+    Statistiques d'altimétrie (RGE ALTI/LiDAR HD) — min, max, moyenne — pour
+    choisir la référence locale Z=0 avant génération (voir /api/archicad/generate,
+    paramètre z_ref_mode). Calculées sur les parcelles sélectionnées
+    (parcelles_geojson) si fournies — c'est leur terrain qui sera effectivement
+    affecté par le choix de Z=0 — sinon en repli sur le périmètre entier
+    (perimeter_geojson).
+    """
+    data = request.get_json() or {}
+    parcelles_geojson = data.get('parcelles_geojson') or []
+    perimeter_geojson = data.get('perimeter_geojson')
+    if not parcelles_geojson and not perimeter_geojson:
+        return jsonify({'error': 'parcelles_geojson ou perimeter_geojson requis'}), 400
+
+    if parcelles_geojson:
+        mask_polys = []
+        for geom in parcelles_geojson:
+            shp = _to_l93(geom).buffer(0)
+            mask_polys.extend([shp] if shp.geom_type == 'Polygon' else list(shp.geoms))
+        mask_union = _unary_union(mask_polys) if mask_polys else None
+    else:
+        mask_union = _to_l93(perimeter_geojson).buffer(0)
+
+    if mask_union is None or mask_union.is_empty:
+        return jsonify({'error': "Altimétrie indisponible sur ce périmètre."}), 404
+
+    min_x, min_y, max_x, max_y = mask_union.bounds
+    rows, spacing = _fetch_elevation_grid_l93(min_x, min_y, max_x, max_y, spacing_m=1.0)
+    valid_z = [z for row in rows for x, y, z in row if z is not None and mask_union.covers(_ShapelyPoint(x, y))]
+
+    if not valid_z:
+        return jsonify({'error': "Altimétrie indisponible sur ce périmètre."}), 404
+
+    return jsonify({
+        'min':     min(valid_z),
+        'max':     max(valid_z),
+        'average': sum(valid_z) / len(valid_z),
+        'count':   len(valid_z),
+    })
 
 
 @app.route('/api/archicad/generate', methods=['POST'])
@@ -826,6 +1096,13 @@ def archicad_generate():
     parcels_scope = data.get('parcels_scope') or 'all'
     selected_parcelles_geojson = data.get('parcelles_geojson')
     solid_operations = data.get('solid_operations', True)
+    z_ref_mode = data.get('z_ref_mode') or 'min'
+    z_ref_manual_value = data.get('z_ref_manual_value')
+    try:
+        parcel_boundary_spacing = float(data.get('parcel_boundary_spacing') or 1.0)
+    except (TypeError, ValueError):
+        parcel_boundary_spacing = 1.0
+    parcel_boundary_spacing = max(0.1, parcel_boundary_spacing)
     if not anchor_point:
         return jsonify({'error': "Point d'ancrage requis"}), 400
     if not perimeter_geojson:
@@ -865,9 +1142,10 @@ def archicad_generate():
     _archicad_progress.update({'stage': 'Maillage de terrain…', 'done': 0, 'total': 0})
 
     # ── Maillage de terrain (RGE ALTI/LiDAR HD, coordonnées locales) ────────
-    # Référence locale Z=0 : le point le plus bas du terrain de la zone sélectionnée
-    # (pas l'altitude du point d'ancrage) — tout le reste (terrain, bâtiments) est
-    # exprimé en hauteur positive au-dessus de ce minimum.
+    # Référence locale Z=0 : min/max/moyenne de l'altimétrie de la zone sélectionnée
+    # selon z_ref_mode (choisi par l'utilisateur, cf. /api/archicad/elevation_stats),
+    # pas l'altitude du point d'ancrage — tout le reste (terrain, bâtiments) est
+    # exprimé en hauteur relative à cette référence.
     mesh_points = 0
     parcelles_count = 0
     z_ref = anchor_z  # repli si le maillage échoue : au moins les bâtiments restent cohérents
@@ -877,10 +1155,29 @@ def archicad_generate():
         rows, spacing = _fetch_elevation_grid_l93(min_x, min_y, max_x, max_y, spacing_m=1.0)
 
         valid_z = [z for row in rows for _, _, z in row if z is not None]
-        z_ref = min(valid_z) if valid_z else anchor_z
+        if z_ref_mode == 'manual' and z_ref_manual_value is not None:
+            z_ref = float(z_ref_manual_value)
+        elif valid_z:
+            z_ref = {
+                'min':     min(valid_z),
+                'max':     max(valid_z),
+                'average': sum(valid_z) / len(valid_z),
+            }.get(z_ref_mode, min(valid_z))
+        else:
+            z_ref = anchor_z
 
         def to_local(x, y, z):
             return {'x': x - anchor_x, 'y': y - anchor_y, 'z': (z - z_ref) if z is not None else 0.0}
+
+        # Profondeur de jupe du maillage de terrain (corps solide) : doit dépasser
+        # l'écart entre le point le plus bas et la référence Z=0 choisie, sinon la
+        # jupe ne descend pas jusqu'au bas réel du terrain et le corps solide ne se
+        # ferme pas correctement (constaté : jupe à 4 m par défaut d'Archicad alors
+        # que le point le plus bas était ~8 m sous Z=0). Marge de sécurité en plus,
+        # par cohérence avec BUILDING_SKIRT_MARGIN plus bas.
+        TERRAIN_SKIRT_MARGIN = 5.0
+        local_min_z = (min(valid_z) - z_ref) if valid_z else 0.0
+        terrain_skirt_level = max(0.0, -local_min_z) + TERRAIN_SKIRT_MARGIN
 
         # Contour réel du périmètre (pas sa boîte englobante, qui déborde du tracé
         # car le Lambert-93 n'est pas aligné avec la grille lat/lon de la carte).
@@ -919,6 +1216,8 @@ def archicad_generate():
                 'sublines': sublines,
                 'showLines': False,
                 'ridges': 'AllSmooth',
+                'skirtType': 'SolidBodyWithSkirt',
+                'skirtLevel': terrain_skirt_level,
             }]
         })
         mesh_element_id = create_result['elements'][0]['elementId']
@@ -992,7 +1291,11 @@ def archicad_generate():
         ]
 
         _tapir_run_command('ModifyMeshes', {
-            'meshesData': [{'elementId': mesh_element_id, 'meshData': {'polygonCoordinates': real_corners}}]
+            'meshesData': [{'elementId': mesh_element_id, 'meshData': {
+                'polygonCoordinates': real_corners,
+                'skirtType': 'SolidBodyWithSkirt',
+                'skirtLevel': terrain_skirt_level,
+            }}]
         })
         # Contour complet APRÈS réduction (avec les sommets intermédiaires insérés
         # automatiquement par Archicad aux croisements de grille, en plus de nos coins) —
@@ -1032,18 +1335,23 @@ def archicad_generate():
             merged_boundary.pop()
         full_boundary = merged_boundary
 
-        # ── Points d'intersection parcelles ↔ triangulation du terrain ──────────
-        # Un maillage "helper" (même emprise/mêmes sublines que le terrain), réduit
-        # (ModifyMeshes) au contour brut de CHAQUE parcelle : Archicad insère alors
-        # lui-même, à chaque endroit où ce contour traverse la triangulation
-        # existante, un sommet à l'altitude exacte de cette triangulation (même
-        # mécanisme que pour le contour principal, cf. étape précédente). Ces points
-        # servent à DEUX choses : (1) affiner le maillage de terrain global lui-même
-        # (ajoutés à ses sublines à un seul point, donc invisibles comme lignes) et
-        # (2) construire le contour de chaque maillage de parcelle individuel.
+        # ── Parcelles sélectionnées → groupes mitoyens fusionnés → trous + maillages ──
+        # Les parcelles sélectionnées qui se touchent sont fusionnées (union) en
+        # groupes connexes ; chaque groupe devient UN trou dans le maillage de
+        # terrain principal ET UN maillage dédié qui vient combler exactement ce
+        # trou. Le contour de chaque groupe est densifié tous les ~1 m le long de
+        # chaque segment (tous les sommets cadastraux d'origine conservés), altitude
+        # par bilinear_z sur la même grille que le reste du terrain — plutôt que de
+        # ne poser un point qu'aux croisements avec la grille (espacement irrégulier
+        # selon l'angle du segment, donnant un contour visuellement "haché").
+        # Archicad recalcule de toute façon l'altitude exacte du trou à son
+        # intégration (voir plus bas, relecture après coup) : ce contour n'est qu'une
+        # proposition de départ, l'échantillonnage régulier n'affecte que la lisibilité
+        # visuelle, pas la fidélité finale au terrain réel.
         parcelles_count = 0
-        parcel_crossing_points = []  # points bruts (non découpés), pour le terrain global
-        parcel_contours = []  # (clipped_polys, z_lookup) par parcelle, pour les maillages individuels
+        hole_polygons = []          # pour le paramètre 'holes' du terrain
+        parcel_group_meshes = []    # un maillage par groupe mitoyen, posé dans le trou correspondant
+        parcel_polylines_data = []  # limites de parcelle en polyligne 2D, sur l'étage d'implantation
         try:
             bbox_poly = _ShapelyPolygon([
                 (min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y),
@@ -1051,10 +1359,17 @@ def archicad_generate():
             # Polygone 2D (coordonnées locales) de l'emprise réelle du terrain, tel que
             # généré (mêmes sommets que full_boundary) — sert de limite de découpe finale.
             terrain_local_poly = _ShapelyPolygon([(pt['x'], pt['y']) for pt in full_boundary]).buffer(0)
+            # Léger retrait (5 cm) pour découper les groupes de parcelles : Archicad
+            # exige qu'un trou soit STRICTEMENT intérieur au maillage (rejet silencieux
+            # avec "Failed to modify mesh" sinon) — constaté quand une parcelle touche
+            # exactement le bord réel du terrain. Négligeable à l'échelle du bâtiment,
+            # appliqué à la fois au trou et au maillage qui le comble (même contour),
+            # donc aucune discordance entre les deux.
+            terrain_local_poly_inset = terrain_local_poly.buffer(-0.05)
 
             def _z_on_terrain_edge(px, py):
                 """Altitude interpolée le long de full_boundary, pour un point situé
-                exactement sur ce contour (bord de découpe d'une parcelle)."""
+                exactement sur ce contour (bord de découpe d'un groupe de parcelles)."""
                 n_fb = len(full_boundary)
                 best_dist, best_z = None, None
                 for i in range(n_fb):
@@ -1072,135 +1387,74 @@ def archicad_generate():
 
             # 'selected' : seulement les parcelles choisies par l'utilisateur dans
             # l'interface (envoyées telles quelles) — beaucoup plus rapide, chaque
-            # parcelle nécessitant plusieurs appels Tapir (helper créé/réduit/lu).
+            # groupe nécessitant plusieurs appels Tapir (helper créé/réduit/lu).
             # 'all' (défaut) : toutes les parcelles du périmètre, via l'API cadastre.
             if parcels_scope == 'selected' and selected_parcelles_geojson:
                 parcelles_geoms = selected_parcelles_geojson
+                annotation_parcelles_geoms = _fetch_parcelles_geometries(perimeter_geojson)
             else:
                 parcelles_geoms = _fetch_parcelles_geometries(perimeter_geojson)
+                annotation_parcelles_geoms = parcelles_geoms
 
-            _archicad_progress.update({'stage': 'Parcelles…', 'done': 0, 'total': len(parcelles_geoms)})
-            for parcel_idx, geom in enumerate(parcelles_geoms):
-                _archicad_progress['done'] = parcel_idx + 1
-                parcel_l93 = _to_l93(geom).buffer(0)
-                # Limiter d'abord à l'emprise de la grille récupérée : le maillage helper
-                # ne peut être réduit qu'à un contour contenu dans son étendue actuelle.
-                parcel_in_grid = parcel_l93.intersection(bbox_poly)
-                if parcel_in_grid.is_empty:
+            # Limites de parcelle (polylignes) : toujours sur TOUTES les parcelles de
+            # l'emprise du terrain global, indépendamment de 'parcels_scope' (qui ne
+            # restreint que le maillage/trou 3D aux parcelles sélectionnées) —
+            # l'annotation du plan doit couvrir tout le terrain généré.
+            annotation_parcel_polys_l93 = [_to_l93(g).buffer(0) for g in annotation_parcelles_geoms]
+
+            parcel_polys_l93 = [_to_l93(g).buffer(0) for g in parcelles_geoms]
+            merged = _unary_union(parcel_polys_l93) if parcel_polys_l93 else _ShapelyPolygon()
+            if merged.is_empty:
+                merged_groups = []
+            elif merged.geom_type == 'MultiPolygon':
+                merged_groups = list(merged.geoms)
+            else:
+                merged_groups = [merged]
+
+            def _densify_ring(ring_xy, spacing=1.0):
+                """Un point tous les ~1 m le long de chaque segment de l'anneau
+                (fermé), tous les sommets d'origine conservés."""
+                pts = list(ring_xy)
+                if pts[0] != pts[-1]:
+                    pts = pts + [pts[0]]
+                out = []
+                for i in range(len(pts) - 1):
+                    x0, y0 = pts[i]
+                    x1, y1 = pts[i + 1]
+                    seg_len = math.hypot(x1 - x0, y1 - y0)
+                    n = max(1, int(seg_len // spacing))
+                    for k in range(n):
+                        t = k / n
+                        out.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+                return out
+
+            _archicad_progress.update({'stage': 'Parcelles…', 'done': 0, 'total': len(merged_groups)})
+            for group_idx, group_poly in enumerate(merged_groups):
+                _archicad_progress['done'] = group_idx + 1
+                group_in_grid = group_poly.intersection(bbox_poly)
+                if group_in_grid.is_empty:
                     continue
-                parts = list(parcel_in_grid.geoms) if parcel_in_grid.geom_type == 'MultiPolygon' else [parcel_in_grid]
+                parts = list(group_in_grid.geoms) if group_in_grid.geom_type == 'MultiPolygon' else [group_in_grid]
 
                 for part in parts:
                     if part.is_empty or part.geom_type != 'Polygon':
                         continue
-                    raw_local = [
+                    densified_xy = _densify_ring(list(part.exterior.coords), spacing=parcel_boundary_spacing)
+                    group_full_boundary = [
                         {'x': x - anchor_x, 'y': y - anchor_y, 'z': to_local(x, y, bilinear_z(x, y))['z']}
-                        for x, y in part.exterior.coords
+                        for x, y in densified_xy
                     ]
+                    if group_full_boundary[0] != group_full_boundary[-1]:
+                        group_full_boundary.append(group_full_boundary[0])
 
-                    # Un maillage "helper" FRAIS (pleine emprise + grille), recréé pour
-                    # CHAQUE parcelle : Archicad n'insère les sommets de croisement de
-                    # triangulation que lors d'un vrai rétrécissement depuis la grille
-                    # complète — réutiliser un helper déjà rétréci sur la parcelle
-                    # précédente ne redéclenche pas cette insertion pour un contour qui
-                    # n'en est pas un sous-ensemble (constaté : une seule parcelle sur 25
-                    # obtenait ses points de croisement, les autres gardaient leurs
-                    # sommets bruts tels quels).
-                    helper_result = _tapir_run_command('CreateMeshes', {
-                        'meshesData': [{
-                            'level': 0.0,
-                            'polygonCoordinates': bbox_corners,
-                            'sublines': sublines,
-                            'showLines': False,
-                            'ridges': 'AllSmooth',
-                        }]
-                    })
-                    helper_id = helper_result['elements'][0]['elementId']
-                    _tapir_run_command('ModifyMeshes', {
-                        'meshesData': [{'elementId': helper_id, 'meshData': {'polygonCoordinates': raw_local}}]
-                    })
-                    d = _tapir_run_command('GetDetailsOfElements', {'elements': [{'elementId': helper_id}]})
-                    parcel_full_boundary = d['detailsOfElements'][0]['details']['polygonCoordinates']
-                    _tapir_run_command('DeleteElements', {'elements': [{'elementId': helper_id}]})
+                    z_lookup = {(round(pt['x'], 3), round(pt['y'], 3)): pt['z'] for pt in group_full_boundary}
 
-                    parcel_crossing_points.extend(parcel_full_boundary)
-
-                    # Table de correspondance (x,y arrondis) → z, pour retrouver l'altitude
-                    # exacte calculée par Archicad (sommets bruts + croisements de grille).
-                    z_lookup = {(round(pt['x'], 3), round(pt['y'], 3)): pt['z'] for pt in parcel_full_boundary}
-
-                    parcel_2d = _ShapelyPolygon([(pt['x'], pt['y']) for pt in parcel_full_boundary]).buffer(0)
-                    clipped = parcel_2d.intersection(terrain_local_poly)
+                    group_2d = _ShapelyPolygon([(pt['x'], pt['y']) for pt in group_full_boundary]).buffer(0)
+                    clipped = group_2d.intersection(terrain_local_poly_inset)
                     if clipped.is_empty:
                         continue
                     clipped_polys = list(clipped.geoms) if clipped.geom_type == 'MultiPolygon' else [clipped]
-                    parcel_contours.append((clipped_polys, z_lookup))
-        except Exception as e:
-            errors.append(f'Points parcelles : erreur — {e}')
 
-        # Une fois le contour façonné, on remplace les sublines de grille (lignes,
-        # visibles même avec showLines à false) par leur équivalent en points isolés —
-        # une "subline" à un seul point n'a rien à tracer comme ligne, mais reste prise
-        # en compte pour la forme du maillage. Le relief intérieur est conservé, sans
-        # ligne de grille visible. Les limites de parcelle, elles, sont ajoutées comme
-        # de VRAIES sublines multi-points (donc visibles comme lignes) : chaque contour
-        # de parcelle découpé (cf. ci-dessus) devient une subline dont chaque sommet
-        # reprend l'altitude par la MÊME interpolation bilinéaire que le reste du
-        # terrain (bilinear_z, sur la grille déjà chargée) — pas un mélange de sources
-        # (correspondance exacte / projection sur bord / requête indépendante) : c'est
-        # ce mélange qui faisait dévier la forme du terrain d'une parcelle à l'autre.
-        parcel_sublines = []
-        for clipped_polys, _z_lookup in parcel_contours:
-            for poly in clipped_polys:
-                if poly.is_empty or poly.geom_type != 'Polygon':
-                    continue
-                coords = [
-                    {'x': x, 'y': y, 'z': to_local(x + anchor_x, y + anchor_y, bilinear_z(x + anchor_x, y + anchor_y))['z']}
-                    for x, y in poly.exterior.coords
-                ]
-                if len(coords) >= 2:
-                    parcel_sublines.append({'coordinates': coords})
-
-        # Les points de grille/parcelle qui tombent exactement sur un sommet du
-        # contour (même x,y) donnent parfois une z différente de celle du contour
-        # (constaté : 404 conflits sur un terrain réel) — deux altitudes contradictoires
-        # au même endroit, ce qui peut faire échouer/bloquer la triangulation
-        # d'Archicad. Le contour fait autorité : on retire ces points en double plutôt
-        # que de les laisser contredire sa cote.
-        BOUNDARY_SNAP = 0.02
-        boundary_xy = [(pt['x'], pt['y']) for pt in full_boundary]
-
-        def _on_boundary(x, y):
-            return any(abs(x - bx) < BOUNDARY_SNAP and abs(y - by) < BOUNDARY_SNAP for bx, by in boundary_xy)
-
-        grid_points_local = [to_local(x, y, z) for row in rows for x, y, z in row]
-        grid_points_local = [pt for pt in grid_points_local if not _on_boundary(pt['x'], pt['y'])]
-
-        point_sublines = (
-            [{'coordinates': [pt]} for pt in grid_points_local]
-            + parcel_sublines
-        )
-        _tapir_run_command('ModifyMeshes', {
-            'meshesData': [{'elementId': mesh_element_id, 'meshData': {'sublines': point_sublines}}]
-        }, timeout=120)
-        # Remplacer les sublines modifie de façon imprévisible certains sommets du
-        # contour (vérifié empiriquement) — on réapplique donc le contour complet après.
-        _tapir_run_command('ModifyMeshes', {
-            'meshesData': [{'elementId': mesh_element_id, 'meshData': {'polygonCoordinates': full_boundary}}]
-        })
-        mesh_points = sum(len(row) for row in rows)
-
-        # ── Maillages de parcelles individuels : DÉSACTIVÉS TEMPORAIREMENT ───────
-        # (à la demande explicite : on revient aux seuls points d'intersection
-        # injectés dans le maillage de terrain ci-dessus, sans créer de maillage
-        # séparé par parcelle pour l'instant). parcel_contours reste calculé et
-        # disponible si on les réactive.
-        GENERATE_INDIVIDUAL_PARCEL_MESHES = False
-        if GENERATE_INDIVIDUAL_PARCEL_MESHES:
-            try:
-                PARCEL_MESH_OFFSET = 0.02  # au-dessus du terrain, évite le conflit visuel (z-fighting)
-                parcel_meshes_data = []
-                for clipped_polys, z_lookup in parcel_contours:
                     for poly in clipped_polys:
                         if poly.is_empty or poly.geom_type != 'Polygon':
                             continue
@@ -1213,22 +1467,192 @@ def archicad_generate():
                                 z = _z_on_terrain_edge(x, y)
                                 if z is None:
                                     z = to_local(x + anchor_x, y + anchor_y, bilinear_z(x + anchor_x, y + anchor_y))['z']
-                            coords.append({'x': x, 'y': y, 'z': z + PARCEL_MESH_OFFSET})
-                        if len(coords) >= 4:
-                            parcel_meshes_data.append({
-                                'level': 0.0,
-                                'polygonCoordinates': coords,
-                                'showLines': True,
-                                'ridges': 'UserDefined',
-                            })
+                            coords.append({'x': x, 'y': y, 'z': z})
+                        if len(coords) < 4:
+                            continue
 
-                if parcel_meshes_data:
-                    _tapir_run_command('CreateMeshes', {'meshesData': parcel_meshes_data}, timeout=120)
-                    parcelles_count = len(parcel_meshes_data)
-            except Exception as e:
-                errors.append(f'Maillages parcelles : erreur — {e}')
-        else:
-            parcelles_count = len(parcel_contours)
+                        # Points d'altitude À L'INTÉRIEUR du groupe (pas seulement son
+                        # contour) : sans eux, Archicad triangule à plat entre les seuls
+                        # sommets du contour, donnant un effet de "plateau" sur un
+                        # terrain en pente au lieu de suivre le relief réel (constaté).
+                        # Mêmes points de grille que le terrain principal, réutilisés
+                        # tels quels (même source, aucune incohérence possible).
+                        interior_sublines = [
+                            {'coordinates': [{'x': gx - anchor_x, 'y': gy - anchor_y, 'z': to_local(gx, gy, gz)['z']}]}
+                            for row in rows for gx, gy, gz in row
+                            if gz is not None and poly.covers(_ShapelyPoint(gx - anchor_x, gy - anchor_y))
+                        ]
+                        print(f'DEBUG group interior_sublines: {len(interior_sublines)} (poly area={poly.area:.1f})', flush=True)
+
+                        # Même contour, à la fois trou dans le terrain et maillage qui
+                        # le comble : raccord flush garanti (pas de décalage/offset).
+                        hole_polygons.append({'polygonCoordinates': coords})
+                        parcel_group_meshes.append({
+                            'level': 0.0,
+                            'polygonCoordinates': coords,
+                            'sublines': interior_sublines,
+                            'showLines': False,
+                            'ridges': 'AllSmooth',
+                            # Même épaisseur que le maillage de terrain principal (voir
+                            # terrain_skirt_level plus haut), pour un rendu cohérent —
+                            # sinon les maillages de parcelle n'ont pas de jupe du tout.
+                            'skirtType': 'SolidBodyWithSkirt',
+                            'skirtLevel': terrain_skirt_level,
+                        })
+
+            # ── Polylignes de contour de parcelle : UNE par parcelle cadastrale
+            # d'origine (pas par groupe mitoyen fusionné, pas la version densifiée
+            # à 1 point/mètre utilisée pour les maillages) — pour afficher la vraie
+            # géométrie cadastrale, y compris la limite entre deux parcelles
+            # mitoyennes fusionnées dans un même maillage. Sur TOUTES les parcelles
+            # de l'emprise du terrain global (annotation_parcel_polys_l93), pas
+            # seulement les parcelles sélectionnées/du projet. On ne clippe qu'au
+            # périmètre du terrain (sans redensifier) pour rester dans l'emprise
+            # générée, sinon les sommets d'origine sont conservés tels quels.
+            for parcel_poly in annotation_parcel_polys_l93:
+                try:
+                    parcel_local = _ShapelyPolygon([
+                        (x - anchor_x, y - anchor_y) for x, y in parcel_poly.exterior.coords
+                    ]).buffer(0)
+                    clipped_parcel = parcel_local.intersection(terrain_local_poly_inset)
+                    if clipped_parcel.is_empty:
+                        continue
+                    clipped_parcel_parts = (
+                        list(clipped_parcel.geoms) if clipped_parcel.geom_type == 'MultiPolygon' else [clipped_parcel]
+                    )
+                    for cp in clipped_parcel_parts:
+                        if cp.is_empty or cp.geom_type != 'Polygon' or len(cp.exterior.coords) < 4:
+                            continue
+                        parcel_polylines_data.append({
+                            'coordinates': [{'x': x, 'y': y} for x, y in cp.exterior.coords],
+                        })
+                except Exception:
+                    pass  # polyligne de parcelle optionnelle : ne bloque jamais le reste
+        except Exception as e:
+            errors.append(f'Points parcelles : erreur — {e}')
+
+        # Les points de grille situés dans un trou de parcelle sont exclus (zone
+        # absente du terrain). Le reste des points de grille (lignes, visibles même
+        # avec showLines à false) est remplacé par son équivalent en points isolés —
+        # une "subline" à un seul point n'a rien à tracer comme ligne, mais reste
+        # prise en compte pour la forme du maillage.
+        #
+        # Les points de grille/parcelle qui tombent exactement sur un sommet du
+        # contour (même x,y) donnent parfois une z différente de celle du contour
+        # (constaté : 404 conflits sur un terrain réel) — deux altitudes contradictoires
+        # au même endroit, ce qui peut faire échouer/bloquer la triangulation
+        # d'Archicad. Le contour fait autorité : on retire ces points en double plutôt
+        # que de les laisser contredire sa cote.
+        BOUNDARY_SNAP = 0.02
+        boundary_xy = [(pt['x'], pt['y']) for pt in full_boundary]
+
+        def _on_boundary(x, y):
+            return any(abs(x - bx) < BOUNDARY_SNAP and abs(y - by) < BOUNDARY_SNAP for bx, by in boundary_xy)
+
+        hole_shapely_polys = [
+            _ShapelyPolygon([(p['x'], p['y']) for p in h['polygonCoordinates']]).buffer(0)
+            for h in hole_polygons
+        ]
+
+        def _in_any_hole(x, y):
+            pt = _ShapelyPoint(x, y)
+            return any(hp.covers(pt) for hp in hole_shapely_polys)
+
+        grid_points_local = [to_local(x, y, z) for row in rows for x, y, z in row]
+        grid_points_local = [
+            pt for pt in grid_points_local
+            if not _on_boundary(pt['x'], pt['y']) and not _in_any_hole(pt['x'], pt['y'])
+        ]
+
+        point_sublines = [{'coordinates': [pt]} for pt in grid_points_local]
+        _tapir_run_command('ModifyMeshes', {
+            'meshesData': [{'elementId': mesh_element_id, 'meshData': {
+                'sublines': point_sublines,
+                'skirtType': 'SolidBodyWithSkirt',
+                'skirtLevel': terrain_skirt_level,
+            }}]
+        }, timeout=120)
+        # Remplacer les sublines modifie de façon imprévisible certains sommets du
+        # contour (vérifié empiriquement) — on réapplique donc le contour complet
+        # après. 'holes' doit être envoyé DANS CE MÊME appel, accompagné de
+        # 'polygonCoordinates' — confirmé empiriquement : holes seul (sans
+        # polygonCoordinates dans le même appel) est silencieusement ignoré ;
+        # les deux ensemble persistent correctement, y compris sur un maillage
+        # déjà créé (pas besoin de le recréer).
+        _tapir_run_command('ModifyMeshes', {
+            'meshesData': [{'elementId': mesh_element_id, 'meshData': {
+                'polygonCoordinates': full_boundary,
+                'holes': hole_polygons,
+                'skirtType': 'SolidBodyWithSkirt',
+                'skirtLevel': terrain_skirt_level,
+            }}]
+        })
+        mesh_points = sum(len(row) for row in rows)
+
+        # ── Maillages de parcelles (groupes mitoyens fusionnés), posés dans les trous ──
+        # Archicad peut légèrement déplacer les sommets X/Y d'un trou à son intégration
+        # dans le maillage (croisements de grille) — on relit donc le trou TEL QU'ARCHICAD
+        # L'A FIXÉ pour garantir la concordance horizontale exacte du raccord. En revanche,
+        # le Z qu'Archicad recalcule pour ces sommets s'est révélé peu fiable sur un
+        # contour complexe/pente marquée (constaté : écarts jusqu'à ~4 m, visibles comme
+        # des pics le long des limites de parcelle) — on réutilise donc plutôt notre
+        # propre Z, déjà interpolé de façon cohérente avec le reste du terrain (même
+        # source que 'full_boundary' et les sublines d'intérieur).
+        try:
+            if parcel_group_meshes:
+                d_holes = _tapir_run_command('GetDetailsOfElements', {'elements': [{'elementId': mesh_element_id}]})
+                actual_holes = d_holes['detailsOfElements'][0]['details'].get('holes', [])
+                corrected_holes = list(hole_polygons)
+                for i, group_mesh in enumerate(parcel_group_meshes):
+                    if i >= len(actual_holes):
+                        continue
+                    orig_z_lookup = {
+                        (round(c['x'], 2), round(c['y'], 2)): c['z']
+                        for c in hole_polygons[i]['polygonCoordinates']
+                    }
+                    fixed_coords = []
+                    for c in actual_holes[i]['polygonCoordinates']:
+                        key = (round(c['x'], 2), round(c['y'], 2))
+                        if key in orig_z_lookup:
+                            z = orig_z_lookup[key]
+                        else:
+                            gx, gy = c['x'] + anchor_x, c['y'] + anchor_y
+                            z = to_local(gx, gy, bilinear_z(gx, gy))['z']
+                        fixed_coords.append({'x': c['x'], 'y': c['y'], 'z': z})
+                    group_mesh['polygonCoordinates'] = fixed_coords
+                    corrected_holes[i] = {'polygonCoordinates': fixed_coords}
+                # Réappliquer le trou corrigé au maillage PRINCIPAL : sinon son bord
+                # garde le Z qu'Archicad a recalculé lui-même pour les sommets qu'il a
+                # insérés (peu fiable, cf. note ci-dessus), alors que le maillage de
+                # comblement créé juste après utilise désormais notre Z corrigé — écart
+                # visible pile à la jonction entre trou et comblement sinon.
+                _tapir_run_command('ModifyMeshes', {
+                    'meshesData': [{'elementId': mesh_element_id, 'meshData': {
+                        'polygonCoordinates': full_boundary,
+                        'holes': corrected_holes,
+                        'skirtType': 'SolidBodyWithSkirt',
+                        'skirtLevel': terrain_skirt_level,
+                    }}]
+                })
+                r_create = _tapir_run_command('CreateMeshes', {'meshesData': parcel_group_meshes}, timeout=120)
+                print('DEBUG parcel mesh guids:', [e['elementId']['guid'] for e in r_create.get('elements', [])], flush=True)
+                parcelles_count = len(parcel_group_meshes)
+        except Exception as e:
+            errors.append(f'Maillages parcelles : erreur — {e}')
+
+        # ── Limites de parcelle en polyligne 2D, sur l'étage actif ──
+        # ("étage d'implantation" = l'étage courant du projet au moment de la
+        # génération). Purement 2D (CreatePolylines n'a pas de Z par sommet) : sert
+        # d'annotation de plan, indépendante des maillages 3D ci-dessus.
+        try:
+            if parcel_polylines_data:
+                stories = _tapir_run_command('GetStories') or {}
+                act_story = stories.get('actStory', 0)
+                for pl in parcel_polylines_data:
+                    pl['floorInd'] = act_story
+                _tapir_run_command('CreatePolylines', {'polylinesData': parcel_polylines_data}, timeout=60)
+        except Exception as e:
+            errors.append(f'Limites de parcelle (polyligne) : erreur — {e}')
     except Exception as e:
         errors.append(f'Maillage terrain : erreur — {e}')
 
@@ -1312,6 +1736,16 @@ def archicad_generate():
 
         _archicad_progress.update({'stage': 'Bâtiments…', 'done': 0, 'total': len(building_parts)})
 
+        # Marge de sécurité sous le point le plus bas échantillonné du terrain, pour
+        # le bas de la jupe des bâtiments (pas pour leur hauteur visible) : sur un
+        # terrain en forte pente, poser le bas exactement sur le minimum échantillonné
+        # (marge nulle) fait parfois échouer 'SubtractionUpwards' — soit parce que le
+        # vrai minimum de la surface triangulée passe légèrement sous l'échantillon
+        # de grille, soit parce qu'un contact tangent (marge nulle) est instable
+        # numériquement pour l'opération solide. On enfonce donc la jupe d'autant
+        # de plus, sans changer 'level' (donc sans changer la hauteur apparente).
+        BUILDING_SKIRT_MARGIN = 5.0
+
         def _mesh_payload(part, h, i):
             ground_z = ground_z_by_part.get(i)
             base_z = (ground_z - z_ref) if ground_z is not None else 0.0
@@ -1321,13 +1755,14 @@ def archicad_generate():
             coords = [{'x': x - anchor_x, 'y': y - anchor_y, 'z': 0.0} for x, y in part.exterior.coords]
             # skirtLevel = profondeur de la jupe sous 'level' (confirmé empiriquement :
             # bas de la jupe = level - skirtLevel). En la réglant à la hauteur du
-            # bâtiment, le bas tombe exactement sur l'altitude locale du terrain,
-            # donnant un vrai volume posé au sol avec un seul maillage.
+            # bâtiment + la marge de sécurité, le bas tombe nettement sous l'altitude
+            # locale du terrain, garantissant que l'opération solide traverse bien le
+            # maillage même sur une pente marquée.
             return {
                 'level': base_z + h,
                 'polygonCoordinates': coords,
                 'skirtType': 'SolidBodyWithSkirt',
-                'skirtLevel': h,
+                'skirtLevel': h + BUILDING_SKIRT_MARGIN,
             }
 
         building_element_ids = []

@@ -11,6 +11,50 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* Couleur de fond/texte/flèche posée dynamiquement en JS (dégradé par point) —
+       le CSS ne fixe que la forme. */
+    .zref-point-label {
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 0;
+      font-size: 9px;
+      font-family: monospace;
+      white-space: nowrap;
+    }
+    .zref-point-label .swatch {
+      display: inline-block;
+      padding: 1px 4px;
+      border-radius: 2px;
+      font-weight: 700;
+      color: #fff;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+    }
+    /* Étiquettes en hauteur relative (+1.11, -0.45…) : un peu plus grosses que
+       l'altitude NGF absolue, pour rester lisibles malgré le signe/le point. */
+    .zref-point-label .swatch.relative {
+      font-size: 11px;
+      padding: 2px 5px;
+    }
+    /* La flèche (::before, pseudo-élément) ne peut pas être colorée par point en JS —
+       neutre et sombre pour rester lisible sur n'importe quelle couleur de fond. */
+    .zref-point-label::before { border-top-color: rgba(0,0,0,0.55) !important; }
+
+    /* Étiquette du point sélectionné : mise en avant (taille, contraste, devant
+       les autres étiquettes qui pourraient se chevaucher). */
+    .zref-point-label.selected { z-index: 10000 !important; }
+    .zref-point-label.selected .swatch {
+      font-size: 12px;
+      padding: 3px 7px;
+      border: 2px solid #1a1a1a;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+    }
+
+    .map-wrapper.zref-active #map { outline: 3px solid #1a1a1a; outline-offset: -3px; cursor: crosshair; }
+    /* Fond de carte en niveaux de gris pendant le mode altimétrie : fait ressortir
+       le dégradé de couleur des points par contraste. */
+    .map-wrapper.zref-active .leaflet-tile-pane { filter: grayscale(1) brightness(1.05); }
+
     body {
       font-family: 'Helvetica Neue', Arial, sans-serif;
       font-size: 13px;
@@ -294,13 +338,24 @@
     }
     .overlay.visible { display: flex; }
 
-    .print-frame-label-icon {
-      background: transparent !important;
-      border: none !important;
+    /* Gabarit A3 : fixe par rapport à la fenêtre (pas la carte) — toujours centré
+       dans la zone de plan, ne bouge pas au panoramique, redimensionné au zoom. */
+    #a3-gabarit {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      border: 2px dashed #c0392b;
+      pointer-events: none;
+      z-index: 500;
     }
     .print-frame-label {
       box-sizing: content-box;
       position: absolute;
+      top: -1px;
+      left: 50%;
+      transform: translate(-50%, -100%);
       background: rgba(255,255,255,0.9);
       border: 1px solid #c0392b;
       color: #c0392b;
@@ -309,9 +364,7 @@
       padding: 4px 8px;
       white-space: nowrap;
       text-align: center;
-      cursor: move;
       user-select: none;
-      transform: translate(-50%, -50%);
     }
 
     .phase-header {
@@ -366,18 +419,14 @@
         </p>
       </div>
 
-      <!-- Format d'impression (A3) -->
+      <!-- Gabarit A3 -->
       <div class="sidebar-section">
-        <h2>Format d'impression</h2>
+        <h2>Gabarit A3</h2>
         <div class="proj-row">
-          <div class="proj-btn active" id="scale-500" onclick="setPrintScale(500)">1/500</div>
-          <div class="proj-btn" id="scale-1000" onclick="setPrintScale(1000)">1/1000</div>
+          <div class="proj-btn" id="scale-500" onclick="toggleGabarit(500)">1/500</div>
+          <div class="proj-btn" id="scale-1000" onclick="toggleGabarit(1000)">1/1000</div>
         </div>
-        <p style="margin-top:2px;font-size:11px;color:#888;">A3 horizontal (420 × 297 mm)</p>
-        <div class="tool-row" style="margin-top:8px;">
-          <button class="btn btn-secondary" onclick="showPrintFrame()">Centrer ici</button>
-          <button class="btn btn-secondary" onclick="hidePrintFrame()">Masquer</button>
-        </div>
+        <p style="margin-top:2px;font-size:11px;color:#888;">A3 horizontal (420 × 297 mm) — cliquez une échelle pour l'afficher, recliquez pour la masquer. Fixe au centre de la zone de plan.</p>
       </div>
 
       <!-- Calques de risque -->
@@ -395,7 +444,6 @@
         <h2>Délimiter le périmètre</h2>
         <div class="tool-row">
           <button class="btn btn-secondary" id="btn-rect" onclick="activateRect()">Rectangle</button>
-          <button class="btn btn-secondary" id="btn-poly" onclick="activatePoly()">Polygone</button>
           <button class="btn btn-secondary" onclick="clearDrawing()">Effacer</button>
         </div>
         <p style="margin-top:8px;font-size:11px;color:#888;">
@@ -439,8 +487,9 @@
         </div>
       </div>
 
-      <!-- Liste des feuilles -->
-      <div id="feuilles-section">
+      <!-- Liste des feuilles (masquée : toutes sont automatiquement incluses,
+           inutile de complexifier l'interface avec une sélection manuelle) -->
+      <div id="feuilles-section" style="display:none;">
         <div id="feuilles-header" style="display:none;">
           <h2>Feuilles cadastrales</h2>
           <div class="count" id="feuilles-count"></div>
@@ -466,10 +515,10 @@
           <div id="parcelles-header" style="display:none;padding:0 16px 16px;">
             <div style="font-size:11px;font-weight:600;color:#555;">① Parcelles à projeter <span class="count" id="parcelles-count" style="font-weight:400;color:#888;"></span></div>
             <div style="margin-top:8px;display:flex;gap:6px;">
-              <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="selectAllParcelles(true)">Tout sélectionner</button>
-              <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="selectAllParcelles(false)">Tout désélectionner</button>
+              <button class="btn btn-secondary" id="btn-deselect-all-parcelles" style="font-size:11px;padding:4px 8px;" onclick="selectAllParcelles(false)">Tout désélectionner</button>
             </div>
             <div id="parcelles-selection-count" style="margin-top:8px;font-size:11px;color:#2d6a4f;font-weight:600;"></div>
+            <button class="btn btn-secondary" style="font-size:11px;padding:4px 8px;width:100%;margin-top:8px;" onclick="exportAddressToArchicad()">Exporter adresse + nom du projet vers Archicad</button>
           </div>
         </div>
 
@@ -477,10 +526,9 @@
         <div id="anchor-section" style="display:none;padding:0 16px 16px;">
           <div style="font-size:11px;font-weight:600;color:#555;">② Point d'ancrage</div>
           <p style="margin-top:6px;font-size:11px;color:#888;">
-            Cliquez près d'un coin d'une parcelle sélectionnée : le point se cale automatiquement dessus. Glissez-le ensuite pour l'ajuster.
+            Placé automatiquement dès qu'une parcelle est sélectionnée. Glissez-le pour l'ajuster — il se cale sur les sommets des parcelles sélectionnées.
           </p>
           <div class="tool-row" style="margin-top:8px;">
-            <button class="btn btn-secondary" id="btn-anchor" disabled onclick="toggleAnchorMode()">Placer le point</button>
             <button class="btn btn-secondary" onclick="resetAnchor()">Réinitialiser</button>
           </div>
           <div id="anchor-coords" style="margin-top:8px;font-size:11px;color:#2d6a4f;font-weight:600;font-family:monospace;"></div>
@@ -495,11 +543,11 @@
           <div class="proj-btn" id="proj-cc" onclick="setProjection('cc')">CC — Coniques Conformes</div>
         </div>
         <label class="ortho-option">
-          <input type="checkbox" id="chk-hatches" onchange="onHatchesChange()"/>
+          <input type="checkbox" id="chk-hatches" checked onchange="onHatchesChange()"/>
           Générer hachures bâtiments
           <span class="ortho-hint">— 3BATIDUR · 3BATILEGER</span>
         </label>
-        <div class="sub-option" id="hatch-color-option">
+        <div class="sub-option" id="hatch-color-option" style="display:block;">
           <label class="ortho-option" style="margin-bottom:0;">
             <input type="checkbox" id="chk-hatch-color" checked onchange="updateDownloadBtn()"/>
             Forcer couleur de base
@@ -538,6 +586,11 @@
           Opération d'éléments solides (terrain − bâtiments)
           <span class="ortho-hint">— ⚠ peut faire buguer le maillage, désactivez en cas de souci</span>
         </label>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:#555;">
+          Définition du contour de parcelle :
+          <input type="number" id="parcel-boundary-spacing" value="1" min="0.1" step="0.1" style="width:60px;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:12px;font-family:monospace;"/>
+          <span>m</span>
+        </label>
         <button class="btn btn-success" id="btn-archicad" disabled style="margin-top:8px;width:100%;" onclick="generateArchicad()">
           Générer dans Archicad
         </button>
@@ -557,6 +610,101 @@
     <div class="map-wrapper">
       <div id="map"></div>
       <div class="overlay" id="overlay">Chargement en cours…</div>
+      <div id="zref-mode-banner" style="display:none;position:absolute;top:0;left:0;right:0;z-index:900;background:#1a1a1a;color:#fff;text-align:center;font-size:11px;font-weight:600;padding:5px;letter-spacing:0.03em;">
+        🎯 Mode sélection de l'altimétrie — cliquez un point sur le contour · sélection de parcelles verrouillée
+      </div>
+      <div id="a3-gabarit">
+        <div class="print-frame-label" id="a3-gabarit-label"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Récapitulatif modifiable avant export de l'adresse vers Archicad -->
+  <div id="address-modal-backdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:8px;padding:24px;width:400px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+      <h2 style="font-size:14px;font-weight:700;margin:0 0 4px;">Vérifier avant export vers Archicad</h2>
+      <p style="font-size:11px;color:#888;margin:0 0 16px;">Proposé à partir des parcelles sélectionnées — modifiable avant validation (ex: ne garder qu'une seule adresse).</p>
+
+      <label style="display:block;font-size:11px;font-weight:600;color:#555;margin-bottom:4px;">Nom du projet</label>
+      <input type="text" id="am-project-name" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;border:1px solid #ccc;border-radius:4px;font-size:13px;"/>
+
+      <label style="display:block;font-size:11px;font-weight:600;color:#555;margin-bottom:4px;">Adresse</label>
+      <input type="text" id="am-address1" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;border:1px solid #ccc;border-radius:4px;font-size:13px;"/>
+
+      <div style="display:flex;gap:8px;">
+        <div style="flex:1;">
+          <label style="display:block;font-size:11px;font-weight:600;color:#555;margin-bottom:4px;">Code postal</label>
+          <input type="text" id="am-postcode" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;border:1px solid #ccc;border-radius:4px;font-size:13px;"/>
+        </div>
+        <div style="flex:2;">
+          <label style="display:block;font-size:11px;font-weight:600;color:#555;margin-bottom:4px;">Ville</label>
+          <input type="text" id="am-city" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:10px;border:1px solid #ccc;border-radius:4px;font-size:13px;"/>
+        </div>
+      </div>
+
+      <label style="display:block;font-size:11px;font-weight:600;color:#555;margin-bottom:4px;">Pays</label>
+      <input type="text" id="am-country" style="width:100%;box-sizing:border-box;padding:6px 8px;margin-bottom:16px;border:1px solid #ccc;border-radius:4px;font-size:13px;"/>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeAddressModal()">Annuler</button>
+        <button class="btn btn-success" onclick="confirmExportAddress()">Valider et exporter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Choix de l'altimétrie de référence (Z=0 local) avant génération Archicad -->
+  <div id="zref-modal-backdrop" style="display:none;position:fixed;inset:0;pointer-events:none;z-index:1000;align-items:flex-start;justify-content:flex-end;padding:16px;">
+    <div style="pointer-events:auto;background:#fff;border-radius:8px;padding:24px;width:340px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+      <h2 style="font-size:14px;font-weight:700;margin:0 0 4px;">Altimétrie de référence (point 0)</h2>
+      <p style="font-size:11px;color:#888;margin:0 0 12px;">Choisissez quelle valeur sert de Z=0 local pour l'implantation dans Archicad. Des points sont affichés sur le contour des parcelles — cliquez sur un point pour reprendre son altitude en valeur manuelle. La sélection de parcelles est verrouillée tant que cette fenêtre est ouverte.</p>
+
+      <div style="margin-bottom:12px;">
+        <div style="height:10px;border-radius:5px;background:linear-gradient(to right, rgb(37,99,235), rgb(220,38,38));"></div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#888;font-family:monospace;margin-top:2px;">
+          <span id="zref-legend-min">—</span>
+          <span>altitude relative des points</span>
+          <span id="zref-legend-max">—</span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:16px;">
+        <div style="flex:1;text-align:center;background:#f7f7f7;border-radius:6px;padding:10px 6px;">
+          <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Min</div>
+          <div id="zref-min" style="font-size:15px;font-weight:700;font-family:monospace;">—</div>
+        </div>
+        <div style="flex:1;text-align:center;background:#f7f7f7;border-radius:6px;padding:10px 6px;">
+          <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Moyenne</div>
+          <div id="zref-average" style="font-size:15px;font-weight:700;font-family:monospace;">—</div>
+        </div>
+        <div style="flex:1;text-align:center;background:#f7f7f7;border-radius:6px;padding:10px 6px;">
+          <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Max</div>
+          <div id="zref-max" style="font-size:15px;font-weight:700;font-family:monospace;">—</div>
+        </div>
+      </div>
+
+      <label class="ortho-option" style="margin-bottom:2px;">
+        <input type="radio" name="zref-mode" value="min" checked onchange="onZRefModeChange()"/>
+        Minimum <span class="ortho-hint">— recommandé, terrain/bâtiments toujours au-dessus de 0</span>
+      </label>
+      <label class="ortho-option" style="margin-bottom:2px;">
+        <input type="radio" name="zref-mode" value="average" onchange="onZRefModeChange()"/>
+        Moyenne
+      </label>
+      <label class="ortho-option" style="margin-bottom:2px;">
+        <input type="radio" name="zref-mode" value="max" onchange="onZRefModeChange()"/>
+        Maximum
+      </label>
+      <label class="ortho-option" style="margin-bottom:0;display:flex;align-items:center;gap:6px;">
+        <input type="radio" name="zref-mode" value="manual" onchange="onZRefModeChange()" id="zref-mode-manual"/>
+        Manuel :
+        <input type="number" step="0.01" id="zref-manual-value" disabled style="width:90px;padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:13px;font-family:monospace;"/>
+        <span>m</span>
+      </label>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+        <button class="btn btn-secondary" onclick="closeZRefModal()">Annuler</button>
+        <button class="btn btn-success" onclick="confirmZRefAndGenerate()">Générer dans Archicad</button>
+      </div>
     </div>
   </div>
 
@@ -564,11 +712,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
   <script>
   // ── Map init ──────────────────────────────────────────────────────────────
-  const map = L.map('map').setView([48.8566, 2.3522], 13);
+  const map = L.map('map', { maxZoom: 23 }).setView([48.8566, 2.3522], 13);
 
   L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
     attribution: '© OpenStreetMap, © CartoDB',
-    maxZoom: 20
+    maxZoom: 23, maxNativeZoom: 20
   }).addTo(map);
 
   // Layer pour les formes dessinées
@@ -583,14 +731,20 @@
   const parcellesLayer = new L.FeatureGroup();
   map.addLayer(parcellesLayer);
 
+  // Layer pour les points d'altimétrie de contour (choix du Z=0 de référence)
+  const contourPointsLayer = new L.FeatureGroup();
+  map.addLayer(contourPointsLayer);
+
   // Draw controls
   const drawControl = new L.Control.Draw({
     draw: {
       rectangle: { shapeOptions: { color: '#1a1a1a', weight: 2 } },
-      polygon: { shapeOptions: { color: '#1a1a1a', weight: 2 }, allowIntersection: false },
-      polyline: false, circle: false, circlemarker: false, marker: false,
+      polygon: false, polyline: false, circle: false, circlemarker: false, marker: false,
     },
-    edit: { featureGroup: drawnLayer, remove: false }
+    // Pas d'édition (poignées de déplacement/redimensionnement) du rectangle déjà
+    // tracé : la seule façon de changer le périmètre est d'en tracer un nouveau
+    // (bouton "Rectangle"), jamais de modifier l'existant en place.
+    edit: false
   });
   map.addControl(drawControl);
 
@@ -598,7 +752,7 @@
   let feuillesData = [];
   let parcellesData = [];
   let shapeBbox = null;
-  let rectHandler = null, polyHandler = null;
+  let rectHandler = null;
 
   map.on(L.Draw.Event.CREATED, e => {
     drawnLayer.clearLayers();
@@ -606,29 +760,19 @@
     currentShape = e.layer;
     document.getElementById('btn-identify').disabled = false;
     setStatus('Périmètre tracé. Cliquez sur "Identifier les feuilles".');
-    rectHandler = null; polyHandler = null;
+    rectHandler = null;
     updateBtnState();
   });
 
   function activateRect() {
     if (rectHandler) { rectHandler.disable(); rectHandler = null; updateBtnState(); return; }
-    polyHandler && polyHandler.disable();
     rectHandler = new L.Draw.Rectangle(map, drawControl.options.draw.rectangle);
     rectHandler.enable();
-    updateBtnState();
-  }
-  function activatePoly() {
-    if (polyHandler) { polyHandler.disable(); polyHandler = null; updateBtnState(); return; }
-    rectHandler && rectHandler.disable();
-    polyHandler = new L.Draw.Polygon(map, drawControl.options.draw.polygon);
-    polyHandler.enable();
     updateBtnState();
   }
   function updateBtnState() {
     document.getElementById('btn-rect').style.background = rectHandler ? '#333' : '';
     document.getElementById('btn-rect').style.color = rectHandler ? '#fff' : '';
-    document.getElementById('btn-poly').style.background = polyHandler ? '#333' : '';
-    document.getElementById('btn-poly').style.color = polyHandler ? '#fff' : '';
   }
   function clearDrawing() {
     drawnLayer.clearLayers();
@@ -648,8 +792,7 @@
     document.getElementById('parcelles-selection-count').textContent = '';
     document.getElementById('download-bar').style.display = 'none';
     document.getElementById('anchor-section').style.display = 'none';
-    document.getElementById('btn-anchor').disabled = true;
-    resetAnchor();
+    removeAnchor();
     setStatus('Périmètre effacé.');
   }
 
@@ -664,6 +807,80 @@
     if (q.length < 3) { document.getElementById('search-results').style.display = 'none'; return; }
     searchTimer = setTimeout(searchAddress, 300);
   });
+
+  // Un centroïde brut (moyenne des sommets) par parcelle sélectionnée — suffisant
+  // pour une géolocalisation inversée, pas besoin d'un vrai centroïde polygonal.
+  function selectedParcellesCentroids() {
+    return getSelectedParcelles().map(p => {
+      if (!p.geometry) return null;
+      const rings = p.geometry.type === 'MultiPolygon' ? p.geometry.coordinates.flat() : p.geometry.coordinates;
+      let sumLon = 0, sumLat = 0, n = 0;
+      rings.forEach(ring => ring.forEach(([lon, lat]) => { sumLon += lon; sumLat += lat; n++; }));
+      return n ? { lon: sumLon / n, lat: sumLat / n } : null;
+    }).filter(Boolean);
+  }
+
+  async function exportAddressToArchicad() {
+    const points = selectedParcellesCentroids();
+    if (!points.length && anchorMarker) {
+      points.push({ lon: anchorMarker.getLatLng().lng, lat: anchorMarker.getLatLng().lat });
+    }
+    if (!points.length) {
+      setStatus('Sélectionnez au moins une parcelle (ou placez le point d\'ancrage) avant d\'exporter l\'adresse.', 'error');
+      return;
+    }
+    setStatus('Calcul de l\'adresse…', 'loading');
+    try {
+      const r = await fetch('/api/archicad/compute_address', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ points }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Erreur serveur');
+      openAddressModal(d);
+      setStatus('Prêt.');
+    } catch (e) {
+      setStatus('Calcul adresse : ' + e.message, 'error');
+    }
+  }
+
+  function openAddressModal(fields) {
+    document.getElementById('am-project-name').value = fields.project_name || '';
+    document.getElementById('am-address1').value = fields.address1 || '';
+    document.getElementById('am-city').value     = fields.city || '';
+    document.getElementById('am-postcode').value = fields.postcode || '';
+    document.getElementById('am-country').value  = fields.country || 'France';
+    document.getElementById('address-modal-backdrop').style.display = 'flex';
+  }
+
+  function closeAddressModal() {
+    document.getElementById('address-modal-backdrop').style.display = 'none';
+  }
+
+  async function confirmExportAddress() {
+    const payload = {
+      project_name: document.getElementById('am-project-name').value.trim(),
+      address1: document.getElementById('am-address1').value.trim(),
+      city:     document.getElementById('am-city').value.trim(),
+      postcode: document.getElementById('am-postcode').value.trim(),
+      country:  document.getElementById('am-country').value.trim(),
+    };
+    closeAddressModal();
+    setStatus('Export de l\'adresse vers Archicad…', 'loading');
+    try {
+      const r = await fetch('/api/archicad/export_address', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Erreur serveur');
+      setStatus(`Exporté vers Archicad — Projet : ${d.project_name} — Adresse : ${d.address}`, 'success');
+    } catch (e) {
+      setStatus('Export Archicad : ' + e.message, 'error');
+    }
+  }
 
   async function searchAddress() {
     const q = searchInput.value.trim();
@@ -741,9 +958,18 @@
 
       const dp = await parcellesResp.json();
       if (parcellesResp.ok) {
+        // La zone a changé : les parcelles précédemment sélectionnées qui ne sont
+        // plus dans la nouvelle zone doivent être désélectionnées (sinon elles
+        // restent comptées — et le point d'ancrage — sans plus correspondre à
+        // rien de visible/valide).
+        const newIdus = new Set(dp.parcelles.map(p => p.idu));
+        for (const idu of Array.from(selectedParcelleIdus)) {
+          if (!newIdus.has(idu)) selectedParcelleIdus.delete(idu);
+        }
         parcellesData = dp.parcelles;
         renderParcelles(parcellesData, dp.at_limit);
         showParcellesOnMap(parcellesData);
+        updateParcelleSelectionCount();
         msg += ` ${dp.count} parcelle(s) trouvée(s)${dp.at_limit ? ' (limite atteinte)' : ''}.`;
       }
 
@@ -759,7 +985,7 @@
   }
 
   // ── Parcelles : affichage carte + sélection additive au clic ─────────────
-  const PARCELLE_STYLE          = { color: '#1a6fb0', weight: 1.2, fillOpacity: 0.05, fillColor: '#1a6fb0' };
+  const PARCELLE_STYLE          = { color: '#888888', weight: 1.2, fillOpacity: 0.05, fillColor: '#888888' };
   const PARCELLE_STYLE_SELECTED = { color: '#e05d26', weight: 2,   fillOpacity: 0.35, fillColor: '#e05d26' };
 
   let selectedParcelleIdus = new Set();
@@ -782,14 +1008,36 @@
 
   function updateParcelleSelectionCount() {
     const el = document.getElementById('parcelles-selection-count');
-    el.textContent = selectedParcelleIdus.size
-      ? `${selectedParcelleIdus.size} parcelle(s) sélectionnée(s)`
-      : '';
-    const btn = document.getElementById('btn-anchor');
     const hasSelection = selectedParcelleIdus.size > 0;
-    btn.disabled = !hasSelection;
-    if (!hasSelection && anchorMode) toggleAnchorMode();
+    el.textContent = hasSelection ? `${selectedParcelleIdus.size} parcelle(s) sélectionnée(s)` : '';
+
+    // Un point d'ancrage doit toujours être présent dès qu'au moins une parcelle
+    // est sélectionnée (et disparaît si plus aucune ne l'est) — plus de placement
+    // manuel : seul le glissé reste possible, sur un point déjà existant. Si la
+    // parcelle sur laquelle il se trouvait est désélectionnée, il se replace
+    // automatiquement sur une parcelle encore sélectionnée.
+    if (hasSelection && !anchorMarker) {
+      placeAnchor(defaultAnchorLatLng());
+    } else if (!hasSelection && anchorMarker) {
+      removeAnchor();
+    } else if (hasSelection && anchorMarker && !isAnchorOnSelectedParcelle()) {
+      placeAnchor(defaultAnchorLatLng());
+    }
     updateArchicadButtonState();
+  }
+
+  // Vrai si le point d'ancrage est actuellement sur un sommet d'une parcelle
+  // encore sélectionnée (il n'y est jamais que par glissé-aimanté ou placement
+  // par défaut, donc toujours exactement sur un sommet).
+  function isAnchorOnSelectedParcelle() {
+    if (!anchorMarker) return false;
+    const ll = anchorMarker.getLatLng();
+    const EPS = 1e-7;
+    return getSelectedParcelles().some(p => {
+      if (!p.geometry) return false;
+      const rings = p.geometry.type === 'MultiPolygon' ? p.geometry.coordinates.flat() : p.geometry.coordinates;
+      return rings.some(ring => ring.some(([lon, lat]) => Math.abs(lat - ll.lat) < EPS && Math.abs(lon - ll.lng) < EPS));
+    });
   }
 
   function getSelectedParcelles() {
@@ -829,13 +1077,7 @@
       const tip = (p.nom_com || p.code_insee) + ' — ' + p.section + p.numero;
       layer.bindTooltip(tip, { permanent: false, direction: 'center' });
       layer.on('click', e => {
-        if (anchorMode) {
-          L.DomEvent.stop(e);
-          const snapped = findNearestParcelleVertex(e.latlng);
-          placeAnchor(snapped || e.latlng);
-          toggleAnchorMode();
-          return;
-        }
+        if (zRefPickingMode) return;
         toggleParcelleSelection(p);
       });
       parcelleLayerByIdu.set(p.idu, layer);
@@ -851,16 +1093,24 @@
     iconAnchor: [7, 7],
   });
 
-  let anchorMode = false;
   let anchorMarker = null;
+  let zRefPickingMode = false; // vrai pendant le choix de l'altimétrie de référence : verrouille la sélection de parcelles
 
-  function toggleAnchorMode() {
-    anchorMode = !anchorMode;
-    const btn = document.getElementById('btn-anchor');
-    btn.textContent = anchorMode ? 'Cliquez sur la carte…' : 'Placer le point';
-    btn.style.background = anchorMode ? '#333' : '';
-    btn.style.color = anchorMode ? '#fff' : '';
-    map.getContainer().style.cursor = anchorMode ? 'crosshair' : '';
+  // Position par défaut du point d'ancrage : premier sommet de la première
+  // parcelle sélectionnée (placement automatique, pas de clic manuel requis).
+  function defaultAnchorLatLng() {
+    const sel = getSelectedParcelles();
+    for (const p of sel) {
+      if (!p.geometry) continue;
+      const rings = p.geometry.type === 'MultiPolygon' ? p.geometry.coordinates.flat() : p.geometry.coordinates;
+      for (const ring of rings) {
+        if (ring.length) {
+          const [lon, lat] = ring[0];
+          return L.latLng(lat, lon);
+        }
+      }
+    }
+    return map.getCenter();
   }
 
   // Cherche le sommet de parcelle le plus proche du clic (dans un rayon de 12 px écran)
@@ -912,11 +1162,20 @@
     updateArchicadButtonState();
   }
 
-  function resetAnchor() {
+  // Retire complètement le point d'ancrage (plus aucune parcelle sélectionnée).
+  function removeAnchor() {
     if (anchorMarker) { map.removeLayer(anchorMarker); anchorMarker = null; }
     document.getElementById('anchor-coords').textContent = '';
-    if (anchorMode) toggleAnchorMode();
     updateArchicadButtonState();
+  }
+
+  // Reste toujours au moins une parcelle sélectionnée à ce stade (bouton visible
+  // seulement si c'est le cas) : replace le point sur sa position par défaut,
+  // ne le supprime pas — un point doit toujours être présent tant qu'une parcelle
+  // est sélectionnée.
+  function resetAnchor() {
+    if (!selectedParcelleIdus.size) return;
+    placeAnchor(defaultAnchorLatLng());
   }
 
   // Génération Archicad impossible sans au moins une parcelle sélectionnée ET
@@ -929,13 +1188,6 @@
     btn.disabled = !ready;
     btn.title = ready ? '' : "Sélectionnez au moins une parcelle et placez le point d'ancrage.";
   }
-
-  map.on('click', e => {
-    if (!anchorMode) return;
-    const snapped = findNearestParcelleVertex(e.latlng);
-    placeAnchor(snapped || e.latlng);
-    toggleAnchorMode();
-  });
 
   // ── Recherche directe d'une parcelle (commune + section + numéro) ───────
   let parcelleCommuneInsee = null;
@@ -1238,12 +1490,168 @@
       setStatus("Sélectionnez au moins une parcelle avant de générer.", 'error');
       return;
     }
-
-    const selectedParcellesGeojson = getSelectedParcelles().map(p => p.geometry);
     if (!currentShape) {
       setStatus('Périmètre manquant.', 'error');
       return;
     }
+
+    setStatus('Calcul de l\'altimétrie de référence…', 'loading');
+    try {
+      const statsPromise = fetch('/api/archicad/elevation_stats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parcelles_geojson: getSelectedParcelles().map(p => p.geometry) }),
+      }).then(r => r.json());
+
+      const contourPromise = fetch('/api/archicad/contour_points', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parcelles_geojson: getSelectedParcelles().map(p => p.geometry) }),
+      }).then(r => r.json());
+
+      const [stats, contour] = await Promise.all([statsPromise, contourPromise]);
+      if (stats.error) throw new Error(stats.error);
+      openZRefModal(stats);
+      if (!contour.error) showContourPoints(contour.points);
+      setStatus('Prêt.');
+    } catch (e) {
+      setStatus('Altimétrie : ' + e.message, 'error');
+    }
+  }
+
+  // Dégradé bleu (bas) → rouge (haut), relatif au min/max du jeu de points affiché.
+  function elevationColor(z, zMin, zMax) {
+    const t = zMax > zMin ? (z - zMin) / (zMax - zMin) : 0.5;
+    const r = Math.round(37  + t * (220 - 37));
+    const g = Math.round(99  + t * (38  - 99));
+    const b = Math.round(235 + t * (38  - 235));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  const ZREF_POINT_DEFAULT  = { radius: 4, weight: 1, color: '#fff' };
+  const ZREF_POINT_SELECTED = { radius: 7, weight: 2, color: '#1a1a1a' };
+  let selectedZRefMarker = null;
+
+  let zrefMarkers = []; // [{marker, z, color}] — le jeu de points actuellement affiché
+
+  // Étiquette du point : NGF absolu par défaut ; si un point est sélectionné, les
+  // AUTRES points affichent leur écart relatif à celui-ci (+1.11, -0.45…) — le
+  // point sélectionné, lui, garde toujours son altitude NGF absolue.
+  function refreshZRefLabels() {
+    const selectedZ = selectedZRefMarker ? selectedZRefMarker._zrefZ : null;
+    zrefMarkers.forEach(({ marker, z, color }) => {
+      const isSelected = marker === selectedZRefMarker;
+      let label, cls = 'swatch';
+      if (selectedZ === null || isSelected) {
+        label = z.toFixed(2);
+      } else {
+        const delta = z - selectedZ;
+        label = (delta >= 0 ? '+' : '') + delta.toFixed(2);
+        cls = 'swatch relative';
+      }
+      marker.setTooltipContent(`<span class="${cls}" style="background:${color}">${label}</span>`);
+    });
+  }
+
+  function deselectZRefMarker() {
+    if (!selectedZRefMarker) return;
+    selectedZRefMarker.setStyle({ ...ZREF_POINT_DEFAULT, fillColor: selectedZRefMarker._zrefColor, fillOpacity: 0.95 });
+    const prevEl = selectedZRefMarker.getTooltip() && selectedZRefMarker.getTooltip().getElement();
+    if (prevEl) prevEl.classList.remove('selected');
+    selectedZRefMarker = null;
+  }
+
+  function showContourPoints(points) {
+    contourPointsLayer.clearLayers();
+    zrefMarkers = [];
+    selectedZRefMarker = null;
+    if (!points.length) return;
+    const zs = points.map(p => p.z);
+    const zMin = Math.min(...zs), zMax = Math.max(...zs);
+    document.getElementById('zref-legend-min').textContent = zMin.toFixed(2) + ' m';
+    document.getElementById('zref-legend-max').textContent = zMax.toFixed(2) + ' m';
+
+    const latlngs = [];
+    points.forEach(pt => {
+      const color = elevationColor(pt.z, zMin, zMax);
+      latlngs.push([pt.lat, pt.lon]);
+      const marker = L.circleMarker([pt.lat, pt.lon], {
+        ...ZREF_POINT_DEFAULT, fillColor: color, fillOpacity: 0.95,
+      });
+      marker._zrefColor = color;
+      marker._zrefZ = pt.z;
+      // Étiquette colorée (même dégradé que le point) décalée au-dessus, avec une
+      // flèche vers le point : porte l'info couleur sans masquer le contour dessous.
+      marker.bindTooltip(`<span class="swatch" style="background:${color}">${pt.z.toFixed(2)}</span>`, {
+        permanent: true, direction: 'top', offset: [0, -6], className: 'zref-point-label',
+      });
+      marker.on('click', () => {
+        // Recliquer sur le point déjà sélectionné le désélectionne (bascule) —
+        // les étiquettes repassent alors toutes en altitude NGF absolue.
+        if (selectedZRefMarker === marker) {
+          deselectZRefMarker();
+          refreshZRefLabels();
+          return;
+        }
+
+        deselectZRefMarker();
+        marker.setStyle({ ...ZREF_POINT_SELECTED, fillColor: color, fillOpacity: 1 });
+        marker.bringToFront();
+        selectedZRefMarker = marker;
+        refreshZRefLabels();
+        const tipEl = marker.getTooltip() && marker.getTooltip().getElement();
+        if (tipEl) { tipEl.classList.add('selected'); marker.openTooltip(); }
+
+        document.getElementById('zref-mode-manual').checked = true;
+        document.getElementById('zref-manual-value').value = pt.z.toFixed(2);
+        onZRefModeChange();
+      });
+      zrefMarkers.push({ marker, z: pt.z, color });
+      contourPointsLayer.addLayer(marker);
+    });
+
+    if (latlngs.length) map.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40], maxZoom: 21 });
+  }
+
+  function setZRefPickingMode(active) {
+    zRefPickingMode = active;
+    document.querySelector('.map-wrapper').classList.toggle('zref-active', active);
+    document.getElementById('zref-mode-banner').style.display = active ? 'block' : 'none';
+    document.getElementById('btn-deselect-all-parcelles').disabled = active;
+  }
+
+  function openZRefModal(stats) {
+    document.getElementById('zref-min').textContent     = stats.min.toFixed(2) + ' m';
+    document.getElementById('zref-average').textContent = stats.average.toFixed(2) + ' m';
+    document.getElementById('zref-max').textContent     = stats.max.toFixed(2) + ' m';
+    document.getElementById('zref-manual-value').value  = stats.min.toFixed(2);
+    document.getElementById('zref-modal-backdrop').style.display = 'flex';
+    setZRefPickingMode(true);
+  }
+
+  function closeZRefModal() {
+    document.getElementById('zref-modal-backdrop').style.display = 'none';
+    contourPointsLayer.clearLayers();
+    setZRefPickingMode(false);
+  }
+
+  function onZRefModeChange() {
+    document.getElementById('zref-manual-value').disabled = !document.getElementById('zref-mode-manual').checked;
+  }
+
+  async function confirmZRefAndGenerate() {
+    const zRefMode = document.querySelector('input[name="zref-mode"]:checked').value;
+    const zRefManualValue = zRefMode === 'manual'
+      ? parseFloat(document.getElementById('zref-manual-value').value)
+      : null;
+    closeZRefModal();
+    await runArchicadGeneration(zRefMode, zRefManualValue);
+  }
+
+  async function runArchicadGeneration(zRefMode, zRefManualValue) {
+    const checkboxes = document.querySelectorAll('#feuilles-list input[type=checkbox]:checked');
+    const selected = Array.from(checkboxes).map(cb => feuillesData[parseInt(cb.dataset.idx)]);
+    const selectedParcellesGeojson = getSelectedParcelles().map(p => p.geometry);
 
     const statusEl = document.getElementById('archicad-status');
     statusEl.textContent = '';
@@ -1271,6 +1679,9 @@
           parcels_scope:     'selected',
           parcelles_geojson: selectedParcellesGeojson,
           solid_operations:  document.getElementById('chk-solid-ops').checked,
+          z_ref_mode:        zRefMode,
+          z_ref_manual_value: zRefManualValue,
+          parcel_boundary_spacing: parseFloat(document.getElementById('parcel-boundary-spacing').value) || 1.0,
         })
       });
       const d = await r.json();
@@ -1447,78 +1858,61 @@
     }
   }
 
-  // ── Cadre de format d'impression (A3 horizontal, à l'échelle, déplaçable) ─
+  // ── Gabarit A3 (fixe par rapport à la fenêtre, pas à la carte) ───────────
+  // Ce n'est plus un élément géographique déplaçable : un simple cadre HTML
+  // superposé à la carte, toujours centré dans la zone de plan, redimensionné
+  // en pixels selon le zoom courant (taille réelle = A3 × échelle choisie).
   const A3_WIDTH_MM  = 420;
   const A3_HEIGHT_MM = 297;
-  let printScale = 500;
-  let printFrame = null;
-  let printFrameHandle = null;
+  let activeGabaritScale = null; // null = masqué, sinon 500 ou 1000
 
-  function computePrintFrameBounds(center) {
-    const widthM  = (A3_WIDTH_MM  / 1000) * printScale;
-    const heightM = (A3_HEIGHT_MM / 1000) * printScale;
-    const metersPerDegLat = 111320;
-    const metersPerDegLon = 111320 * Math.cos(center.lat * Math.PI / 180);
-    const dLat = (heightM / 2) / metersPerDegLat;
-    const dLon = (widthM  / 2) / metersPerDegLon;
-    return { bounds: [[center.lat - dLat, center.lng - dLon], [center.lat + dLat, center.lng + dLon]], widthM, heightM };
+  // Résolution standard Web Mercator (m/pixel) à la latitude et au zoom donnés.
+  function metersPerPixel(lat, zoom) {
+    return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
   }
 
-  // Ne touche qu'au rectangle (jamais à la poignée elle-même, pour ne pas
-  // interférer avec son propre état de drag interne pendant qu'on la glisse).
-  function redrawRectangle(center) {
-    const { bounds, widthM, heightM } = computePrintFrameBounds(center);
-    if (printFrame) map.removeLayer(printFrame);
-    printFrame = L.rectangle(bounds, {
-      color: '#c0392b', weight: 2, fill: false, dashArray: '8,5', interactive: false,
-    }).addTo(map);
-    return { widthM, heightM };
+  function updateGabarit() {
+    const el = document.getElementById('a3-gabarit');
+    document.getElementById('scale-500').classList.toggle('active', activeGabaritScale === 500);
+    document.getElementById('scale-1000').classList.toggle('active', activeGabaritScale === 1000);
+
+    if (!activeGabaritScale) { el.style.display = 'none'; return; }
+
+    const widthM  = (A3_WIDTH_MM  / 1000) * activeGabaritScale;
+    const heightM = (A3_HEIGHT_MM / 1000) * activeGabaritScale;
+    const mpp = metersPerPixel(map.getCenter().lat, map.getZoom());
+    el.style.width  = (widthM  / mpp).toFixed(1) + 'px';
+    el.style.height = (heightM / mpp).toFixed(1) + 'px';
+    document.getElementById('a3-gabarit-label').textContent =
+      `Gabarit A3 horizontal — 1/${activeGabaritScale} — ${widthM.toFixed(0)} × ${heightM.toFixed(0)} m`;
+    el.style.display = 'block';
   }
 
-  function makeLabelIcon(widthM, heightM) {
-    return L.divIcon({
-      className: 'print-frame-label-icon',
-      html: `<div class="print-frame-label">A3 horizontal — 1/${printScale}<br>${widthM.toFixed(0)} × ${heightM.toFixed(0)} m</div>`,
-      iconSize: [0, 0],
-    });
+  function toggleGabarit(scale) {
+    activeGabaritScale = (activeGabaritScale === scale) ? null : scale;
+    updateGabarit();
   }
 
-  function showPrintFrame() {
-    const center = map.getCenter();
-    const { widthM, heightM } = redrawRectangle(center);
-    const labelIcon = makeLabelIcon(widthM, heightM);
-    if (printFrameHandle) {
-      printFrameHandle.setLatLng(center);
-      printFrameHandle.setIcon(labelIcon);
-    } else {
-      printFrameHandle = L.marker(center, { icon: labelIcon, draggable: true, zIndexOffset: 10000 }).addTo(map);
-      printFrameHandle.on('drag', e => redrawRectangle(e.target.getLatLng()));
-    }
-  }
-
-  function setPrintScale(scale) {
-    printScale = scale;
-    document.getElementById('scale-500').classList.toggle('active', scale === 500);
-    document.getElementById('scale-1000').classList.toggle('active', scale === 1000);
-    if (!printFrame) return;
-    const center = printFrame.getBounds().getCenter();
-    const { widthM, heightM } = redrawRectangle(center);
-    printFrameHandle.setIcon(makeLabelIcon(widthM, heightM));
-  }
-
-  function hidePrintFrame() {
-    if (printFrame) { map.removeLayer(printFrame); printFrame = null; }
-    if (printFrameHandle) { map.removeLayer(printFrameHandle); printFrameHandle = null; }
-  }
+  // Le panoramique ne change rien (le cadre est fixe à l'écran) ; seul le zoom
+  // change sa taille réelle en pixels.
+  map.on('zoom', updateGabarit);
 
   // ── Bascule entre les phases Sélection / Génération ──────────────────────
+  // Le tracé/la modification du rectangle n'est possible qu'en phase Sélection :
+  // le contrôle de dessin (y compris sa propre barre d'outils native sur la
+  // carte, indépendante de nos boutons custom) est retiré en phase Génération.
   function showGenerationPhase() {
     document.getElementById('phase-selection').style.display = 'none';
     document.getElementById('phase-generation').style.display = 'block';
+    if (rectHandler) { rectHandler.disable(); rectHandler = null; updateBtnState(); }
+    map.removeControl(drawControl);
+    activeGabaritScale = null;
+    updateGabarit();
   }
   function backToSelection() {
     document.getElementById('phase-generation').style.display = 'none';
     document.getElementById('phase-selection').style.display = 'block';
+    map.addControl(drawControl);
   }
 
   // ── Utilitaires ──────────────────────────────────────────────────────────
