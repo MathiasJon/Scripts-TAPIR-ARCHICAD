@@ -538,10 +538,6 @@
       <!-- Barre téléchargement -->
       <div id="download-bar">
         <div id="ortho-error"></div>
-        <div class="proj-row">
-          <div class="proj-btn active" id="proj-l93" onclick="setProjection('l93')">Lambert 93</div>
-          <div class="proj-btn" id="proj-cc" onclick="setProjection('cc')">CC — Coniques Conformes</div>
-        </div>
         <label class="ortho-option">
           <input type="checkbox" id="chk-hatches" checked onchange="onHatchesChange()"/>
           Générer hachures bâtiments
@@ -1353,26 +1349,7 @@
     document.querySelectorAll('#feuilles-list input[type=checkbox]').forEach(cb => cb.checked = val);
     updateDownloadBtn();
   }
-  let currentProjection = 'l93';
-
-  function setProjection(proj) {
-    currentProjection = proj;
-    document.getElementById('proj-l93').classList.toggle('active', proj === 'l93');
-    document.getElementById('proj-cc').classList.toggle('active', proj === 'cc');
-    const orthoRow = document.getElementById('ortho-option-row');
-    const orthoHint = document.getElementById('ortho-hint-text');
-    if (proj === 'cc') {
-      orthoRow.style.opacity = '0.4';
-      orthoRow.style.pointerEvents = 'none';
-      document.getElementById('chk-ortho').checked = false;
-      orthoHint.textContent = '— non disponible en CC';
-    } else {
-      orthoRow.style.opacity = '';
-      orthoRow.style.pointerEvents = '';
-      orthoHint.textContent = '— ZIP (DXF + JPEG ~20 cm/px)';
-    }
-    updateDownloadBtn();
-  }
+  const currentProjection = 'l93';
 
   function onHatchesChange() {
     const checked = document.getElementById('chk-hatches').checked;
@@ -1460,8 +1437,8 @@
         orthoErr.style.display = 'none';
       }
       let msg = d.has_ortho
-        ? `ZIP prêt : ${d.downloaded.length} feuille(s) + orthophoto IGN.`
-        : `DXF prêt : ${d.downloaded.length} feuille(s) fusionnée(s).`;
+        ? `ZIP prêt : ${d.sheets_count} feuille(s) + orthophoto IGN.`
+        : `DXF prêt : ${d.sheets_count} feuille(s) fusionnée(s).`;
       if (d.anchor_l93) {
         msg += ` Point d'ancrage inclus (X=${d.anchor_l93.x.toFixed(2)} Y=${d.anchor_l93.y.toFixed(2)} L93).`;
       }

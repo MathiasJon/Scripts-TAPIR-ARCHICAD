@@ -87,12 +87,12 @@ echo.
 echo Demarrage du serveur...
 set LOG=%~dp0cadastre-tool.log
 if exist "%LOG%" del "%LOG%"
-start "" /b cmd /c ".venv\Scripts\python server.py > \"%LOG%\" 2>&1"
+start "" /b .venv\Scripts\python server.py > "%LOG%" 2>&1
 
 REM — Attendre que le serveur soit prêt (max 30 s) —
 set RETRY=0
 :wait
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 set /a RETRY+=1
 if %RETRY% GTR 30 (
     echo.

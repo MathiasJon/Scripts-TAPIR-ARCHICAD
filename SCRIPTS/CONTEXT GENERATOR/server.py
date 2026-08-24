@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import math
 import os
@@ -6,6 +7,7 @@ import tarfile
 import re
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from collections import OrderedDict
@@ -400,29 +402,41 @@ def _extract_cadastral_building_polys(msp):
     return polys
 
 
-def _extract_cadastral_building_polys_from_feuilles(feuilles, projection='l93'):
-    """Télécharge le DXF de chaque feuille et en extrait les polygones bâtiments cadastraux (L93)."""
-    polys = []
-    for f in feuilles:
+def _extract_cadastral_building_polys_from_feuilles(feuilles):
+    """Télécharge le DXF de chaque feuille et en extrait les polygones bâtiments cadastraux (L93).
+    Retourne (polys, errors) — errors liste les feuilles en échec (téléchargement ou lecture DXF),
+    pour que l'appelant puisse les remonter à l'utilisateur plutôt que de les avaler silencieusement.
+    Téléchargements en parallèle (I/O réseau) : en série, les ré-essais sur le bucket
+    OVH capricieux (cf. _download_dxf) rendaient cette étape trop lente sur Windows."""
+    def _fetch_one(f):
+        label = f"{f.get('commune_path', '')}{f.get('com_abs', '000')}{f.get('section', '')}{f.get('numero', '01')}"
         dxf_bytes, err = _download_dxf(
             f.get('commune_path', ''), f.get('com_abs', '000'),
-            f.get('section', ''), f.get('numero', '01'), projection,
+            f.get('section', ''), f.get('numero', '01'),
         )
         if dxf_bytes is None:
-            continue
+            return [], f'{label}: {err}'
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix='.dxf', delete=False) as tmp:
                 tmp.write(dxf_bytes)
                 tmp_path = tmp.name
             src_doc = ezdxf.readfile(tmp_path)
-            polys.extend(_extract_cadastral_building_polys(src_doc.modelspace()))
-        except Exception:
-            continue
+            return _extract_cadastral_building_polys(src_doc.modelspace()), None
+        except Exception as e:
+            return [], f'{label}: lecture DXF échouée — {e}'
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-    return polys
+
+    polys = []
+    errors = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for part_polys, err in pool.map(_fetch_one, feuilles):
+            polys.extend(part_polys)
+            if err:
+                errors.append(err)
+    return polys, errors
 
 
 def _match_building_heights(cadastral_polys, bd_topo_l93, min_overlap_ratio=0.3):
@@ -576,18 +590,18 @@ def _generate_voirie(doc, msp, perimeter_geojson, all_parcelles):
 
 
 def _add_anchor_marker(doc, msp, anchor_x, anchor_y):
-    """Ajoute un repère d'ancrage (POINT + TEXT) au point choisi par l'utilisateur sur la carte."""
+    """Ajoute un repère d'ancrage (POINT + TEXT) au point choisi par l'utilisateur sur la carte.
+    Calque masqué par défaut : repère utile ponctuellement pour recaler le projet, pas destiné
+    à rester visible en permanence dans le DXF."""
     layer = 'REPERE_ANCRAGE_ARCHICAD'
     if layer not in doc.layers:
-        doc.layers.new(layer, dxfattribs={'color': 1})
+        layer_obj = doc.layers.new(layer, dxfattribs={'color': 1})
+        layer_obj.off()
     msp.add_point((anchor_x, anchor_y, 0), dxfattribs={'layer': layer})
     label = f'ANCRAGE ARCHICAD — X={anchor_x:.2f} Y={anchor_y:.2f} (L93)'
     msp.add_text(label, dxfattribs={'layer': layer, 'height': 1.0, 'insert': (anchor_x, anchor_y)})
 
-DXF_BASES = {
-    'l93': 'https://cadastre.data.gouv.fr/data/dgfip-pci-vecteur/2026-03-01/dxf/feuilles',
-    'cc':  'https://cadastre.data.gouv.fr/data/dgfip-pci-vecteur/2026-03-01/dxf-cc/feuilles',
-}
+DXF_BASE = 'https://cadastre.data.gouv.fr/data/dgfip-pci-vecteur/latest/dxf/feuilles'
 
 # Cache des codes postaux pour éviter de ré-interroger geo.api.gouv.fr
 _cp_cache: dict = {}
@@ -1669,7 +1683,13 @@ def archicad_generate():
         if skip_buildings:
             raise _SkipBuildingsSentinel()
         perimeter_l93_buildings = _to_l93(perimeter_geojson).buffer(0)
-        cadastral_polys = _extract_cadastral_building_polys_from_feuilles(feuilles)
+        cadastral_polys, cadastral_dxf_errors = _extract_cadastral_building_polys_from_feuilles(feuilles)
+        if cadastral_dxf_errors:
+            errors.append(
+                f'Bâtiments : {len(cadastral_dxf_errors)} feuille(s) cadastrale(s) illisible(s) — '
+                + '; '.join(cadastral_dxf_errors[:5])
+                + (f' (+{len(cadastral_dxf_errors) - 5} autre(s))' if len(cadastral_dxf_errors) > 5 else '')
+            )
 
         # Recherche BD TOPO sur le périmètre élargi (marge de 20 m) : la géométrie
         # BD TOPO d'un bâtiment est parfois légèrement décalée par rapport au cadastre,
@@ -1892,33 +1912,91 @@ def _patch_extents(content, min_x, min_y, max_x, max_y):
     return content
 
 
-def _download_dxf(commune_path, com_abs, section, numero, projection='l93'):
-    """
-    Télécharge et extrait le DXF d'une feuille depuis cadastre.data.gouv.fr.
-    projection: 'l93' (Lambert 93) ou 'cc' (Coniques Conformes).
-    Retourne les bytes du DXF ou None si non trouvé.
-    """
-    dept = commune_path[:2]
-    prefix = 'dxf-cc' if projection == 'cc' else 'dxf'
-    base   = DXF_BASES.get(projection, DXF_BASES['l93'])
-    filename = f'{prefix}-{commune_path}{com_abs}{section}{numero}.tar.bz2'
-    url = f'{base}/{dept}/{commune_path}/{filename}'
+_DXF_BUNDLE_URL = 'https://cadastre.data.gouv.fr/bundler/pci-vecteur/communes/{commune_path}/dxf'
 
-    try:
-        resp = requests.get(url, timeout=60)
-        if resp.status_code != 200:
-            return None, f'HTTP {resp.status_code} pour {filename}'
-    except requests.RequestException as e:
-        return None, str(e)
+# Cache des archives ZIP "toutes feuilles de la commune" — un seul téléchargement
+# par commune au lieu d'un par feuille. Le bucket OVH qui héberge le téléchargement
+# par feuille (cadastre.data.gouv.fr/data/.../dxf/feuilles/...) réinitialise la
+# connexion TLS de façon intermittente (observé aussi bien sous Windows que dans
+# nos tests — pas lié à une machine en particulier) ; le point d'accès "bundler"
+# groupé par commune ne présente pas ce problème et est nettement plus rapide.
+_dxf_bundle_cache: dict = {}
+_dxf_bundle_lock = threading.Lock()
 
+def _get_commune_dxf_bundle(commune_path):
+    """Télécharge (une fois, avec cache) le ZIP de toutes les feuilles DXF d'une
+    commune. Retourne un zipfile.ZipFile ou None si indisponible.
+    Ré-essais courts : ce point d'accès est nettement plus fiable que le bucket OVH par
+    feuille, mais pas totalement à l'abri de la même coupure de connexion intermittente."""
+    with _dxf_bundle_lock:
+        if commune_path in _dxf_bundle_cache:
+            return _dxf_bundle_cache[commune_path]
+        url = _DXF_BUNDLE_URL.format(commune_path=commune_path)
+        bundle = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, timeout=60)
+                if resp.status_code == 200:
+                    bundle = zipfile.ZipFile(io.BytesIO(resp.content))
+                break
+            except (requests.RequestException, zipfile.BadZipFile):
+                bundle = None
+                if attempt < 2:
+                    time.sleep(0.5)
+        _dxf_bundle_cache[commune_path] = bundle
+        return bundle
+
+
+def _extract_dxf_from_tar_bytes(tar_bytes):
+    """Extrait le premier fichier .DXF d'une archive tar.bz2 (bytes). Retourne (bytes, err)."""
     try:
-        with tarfile.open(fileobj=io.BytesIO(resp.content), mode='r:bz2') as tf:
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode='r:bz2') as tf:
             for member in tf.getmembers():
                 if member.name.upper().endswith('.DXF'):
                     return tf.extractfile(member).read(), None
         return None, 'Aucun fichier DXF dans l\'archive'
     except tarfile.TarError as e:
         return None, f'Erreur archive: {e}'
+
+
+def _download_dxf(commune_path, com_abs, section, numero):
+    """
+    Télécharge et extrait le DXF (Lambert 93) d'une feuille depuis cadastre.data.gouv.fr.
+    Retourne les bytes du DXF ou None si non trouvé.
+    """
+    filename = f'dxf-{commune_path}{com_abs}{section}{numero}.tar.bz2'
+
+    # Voie rapide : bundle groupé par commune.
+    bundle = _get_commune_dxf_bundle(commune_path)
+    if bundle is not None:
+        member_name = f'{commune_path}/{filename}'
+        try:
+            tar_bytes = bundle.read(member_name)
+        except KeyError:
+            return None, f'{filename} absent du bundle de la commune {commune_path}'
+        return _extract_dxf_from_tar_bytes(tar_bytes)
+
+    # Repli : téléchargement par feuille depuis le bucket OVH (moins fiable).
+    dept = commune_path[:2]
+    url = f'{DXF_BASE}/{dept}/{commune_path}/{filename}'
+
+    # Ré-essais courts : un reset de connexion échoue vite (pas besoin d'attendre
+    # le plein timeout réseau pour le détecter), donc pas de pause avant le 2e essai.
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, timeout=20)
+            if resp.status_code != 200:
+                return None, f'HTTP {resp.status_code} pour {filename}'
+            break
+        except requests.RequestException as e:
+            last_err = e
+            if attempt > 0:
+                time.sleep(0.5)
+    else:
+        return None, str(last_err)
+
+    return _extract_dxf_from_tar_bytes(resp.content)
 
 
 _ortho_layer_name = None
@@ -2154,10 +2232,6 @@ def download_and_merge():
     if not feuilles:
         return jsonify({'error': 'Aucune feuille fournie'}), 400
 
-    projection = data.get('projection', 'l93')
-    if projection not in DXF_BASES:
-        projection = 'l93'
-
     merged = ezdxf.new(dxfversion='R2010')
     merged.header['$INSUNITS'] = 6   # mètres
     merged_msp = merged.modelspace()
@@ -2174,7 +2248,7 @@ def download_and_merge():
         numero       = f.get('numero', '01')
         label        = f.get('label', f"{commune_path} {section}{numero}")
 
-        dxf_bytes, err = _download_dxf(commune_path, com_abs, section, numero, projection)
+        dxf_bytes, err = _download_dxf(commune_path, com_abs, section, numero)
         if dxf_bytes is None:
             errors.append(f'{label}: {err}')
             continue
@@ -2207,6 +2281,12 @@ def download_and_merge():
 
     if not downloaded:
         return jsonify({'error': 'Aucun DXF téléchargé', 'details': errors}), 502
+
+    # Nombre de feuilles réellement téléchargées — figé ici, avant que les blocs
+    # suivants (hachures, voirie, hauteurs bâtiments) n'ajoutent leurs propres
+    # entrées à `downloaded` (qui sert de résumé détaillé, pas d'un simple
+    # compteur de feuilles).
+    sheets_count = len(downloaded)
 
     # ── Hachures bâtiments (3BATIDUR / 3BATILEGER) ──────────────────────────
     if data.get('add_hatches', False):
@@ -2270,8 +2350,7 @@ def download_and_merge():
     slug = re.sub(r'[^A-Za-z0-9]', '_', '_'.join(downloaded[:3]))
     dxf_filename = f'cadastre_{slug}.dxf'
 
-    # Orthophoto optionnelle — non disponible en CC (coordonnées L93 requises pour le positionnement WMS)
-    include_ortho = data.get('include_ortho', False) and projection == 'l93'
+    include_ortho = data.get('include_ortho', False)
     ortho_added = False
     ortho_bytes = jpeg_filename = None
 
@@ -2341,6 +2420,7 @@ def download_and_merge():
         'token':          token,
         'filename':       return_filename,
         'downloaded':     downloaded,
+        'sheets_count':   sheets_count,
         'errors':         errors,
         'has_ortho':      ortho_added,
         'anchor_l93':     {'x': anchor_x, 'y': anchor_y} if anchor_x is not None else None,
