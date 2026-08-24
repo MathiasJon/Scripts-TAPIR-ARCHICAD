@@ -31,6 +31,11 @@ jobs:
           cp "$SRC/lancer sous windows.bat"    "$PKG/"
           chmod +x "$PKG/lancer sous mac os.command"
 
+          # Le runner est Linux : le fichier source est en LF. Un .bat Windows a
+          # besoin de CRLF (un .bat en LF pur peut faire fermer cmd.exe aussitôt
+          # au double-clic, sans rien exécuter — constaté en v1.4).
+          sed -i 's/$/\r/' "$PKG/lancer sous windows.bat"
+
           cat > "$PKG/INSTALLER.txt" << 'EOF'
           CADASTRE TOOL — Installation
           ==============================
