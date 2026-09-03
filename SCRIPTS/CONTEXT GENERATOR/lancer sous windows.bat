@@ -1,7 +1,16 @@
 @echo off
 chcp 65001 >nul
-cd /d "%~dp0"
 title Cadastre Tool
+
+REM — Le serveur et ses fichiers sont dans le sous-dossier « app » (a la racine
+REM   on ne garde que les deux lanceurs — pas de server.py double-cliquable par erreur).
+if not exist "%~dp0app\server.py" (
+    echo ERREUR : dossier "app" introuvable a cote du lanceur.
+    echo Decompressez le ZIP en entier avant de lancer.
+    pause
+    exit /b 1
+)
+cd /d "%~dp0app"
 
 echo ============================================
 echo  Cadastre Tool
@@ -96,7 +105,7 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr ":5057 " ^| findstr "L
 REM — Démarrer Flask (log dans cadastre-tool.log) —
 echo.
 echo Demarrage du serveur...
-set LOG=%~dp0cadastre-tool.log
+set LOG=%~dp0app\cadastre-tool.log
 if exist "%LOG%" del "%LOG%"
 start "" /b "%VENV%\Scripts\python.exe" server.py > "%LOG%" 2>&1
 

@@ -22,11 +22,13 @@ jobs:
           set -e
           SRC="SCRIPTS/CONTEXT GENERATOR"
           PKG="cadastre-tool"
-          mkdir -p "$PKG/frontend"
+          mkdir -p "$PKG/app/frontend"
 
-          cp "$SRC/server.py"          "$PKG/"
-          cp "$SRC/requirements.txt"   "$PKG/"
-          cp "$SRC/frontend/index.html" "$PKG/frontend/"
+          # À la racine du paquet : seulement les deux lanceurs (+ INSTALLER.txt).
+          # Tout le reste (serveur, frontend, requirements) dans « app/ ».
+          cp "$SRC/app/server.py"           "$PKG/app/"
+          cp "$SRC/app/requirements.txt"    "$PKG/app/"
+          cp "$SRC/app/frontend/index.html" "$PKG/app/frontend/"
           cp "$SRC/lancer sous mac os.command" "$PKG/"
           cp "$SRC/lancer sous windows.bat"    "$PKG/"
           chmod +x "$PKG/lancer sous mac os.command"

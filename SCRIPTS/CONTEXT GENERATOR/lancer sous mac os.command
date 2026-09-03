@@ -2,8 +2,15 @@
 # Cadastre Tool — macOS
 # Double-clic pour démarrer
 
-APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$APP_DIR"
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Le serveur et ses fichiers sont dans le sous-dossier « app » (à la racine, on
+# ne garde que les deux lanceurs — impossible de double-cliquer server.py par erreur).
+if [ ! -d "$ROOT_DIR/app" ]; then
+    osascript -e 'display alert "Cadastre Tool" message "Dossier « app » introuvable à côté du lanceur. Décompressez le ZIP en entier." as critical'
+    exit 1
+fi
+cd "$ROOT_DIR/app"
+APP_DIR="$PWD"
 
 # Vérifier Python 3
 if ! command -v python3 &>/dev/null; then

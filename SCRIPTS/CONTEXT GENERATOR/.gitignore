@@ -5,8 +5,9 @@
 __pycache__/
 *.pyc
 
-# Fichiers générés (téléchargements temporaires)
+# Fichiers générés (téléchargements temporaires, log serveur)
 downloads/
+cadastre-tool.log
 
 # Sauvegardes locales manuelles (hors historique git)
 backups/
