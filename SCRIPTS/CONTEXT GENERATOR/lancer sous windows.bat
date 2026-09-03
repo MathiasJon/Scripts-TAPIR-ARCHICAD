@@ -61,38 +61,27 @@ for /f %%i in ('%PYTHON% -c "import hashlib,os;print(hashlib.sha1(os.getcwd().en
 set VENV=%LOCALAPPDATA%\CadastreTool\venv-%VENV_ID%
 if not exist "%LOCALAPPDATA%\CadastreTool" md "%LOCALAPPDATA%\CadastreTool"
 
-set VENV_OK=1
-if not exist "%VENV%\Scripts\python.exe" set VENV_OK=0
-if "%VENV_OK%"=="1" (
-    "%VENV%\Scripts\python.exe" -c "import sys" >nul 2>&1
-    if errorlevel 1 set VENV_OK=0
-)
-if "%VENV_OK%"=="0" (
-    echo.
-    if exist "%VENV%" (
-        echo Environnement inutilisable - recreation...
-        rmdir /s /q "%VENV%"
-    ) else (
-        echo Premiere utilisation - creation de l'environnement Python (local a ce poste)...
-    )
-    %PYTHON% -m venv "%VENV%"
-    if errorlevel 1 (
-        echo ERREUR : Impossible de creer l'environnement virtuel.
-        pause
-        exit /b 1
-    )
-    echo OK
-)
-
-REM — Installer/mettre à jour les dépendances —
+REM — Cree/repare le venv, installe les dependances PUIS verifie qu'elles
+REM   s'importent reellement (pip peut reussir en laissant un venv incoherent :
+REM   interpreteur change, install a moitie faite, extension binaire cassee...).
+REM   Si l'un des deux echoue, on reconstruit le venv de zero et on reessaie.
 echo.
 echo Installation des dependances (patientez)...
-"%VENV%\Scripts\pip" install -r requirements.txt --quiet
-if errorlevel 1 (
+call :ensure_venv
+call :install_and_verify
+if not "%DEPS_OK%"=="1" (
+    echo Environnement Python incoherent - reconstruction complete...
+    rmdir /s /q "%VENV%" 2>nul
+    call :ensure_venv
+    call :install_and_verify
+)
+if not "%DEPS_OK%"=="1" (
     echo.
-    echo ERREUR lors de l'installation. Details :
+    echo ERREUR : les bibliotheques Python ^(flask, ezdxf, requests, pyproj, shapely^)
+    echo   n'ont pas pu etre installees ou chargees. Details :
     echo.
-    "%VENV%\Scripts\pip" install -r requirements.txt
+    "%VENV%\Scripts\python.exe" -m pip install -r requirements.txt
+    "%VENV%\Scripts\python.exe" -c "import flask, ezdxf, requests, pyproj, shapely"
     echo.
     pause
     exit /b 1
@@ -109,7 +98,7 @@ echo.
 echo Demarrage du serveur...
 set LOG=%~dp0cadastre-tool.log
 if exist "%LOG%" del "%LOG%"
-start "" /b "%VENV%\Scripts\python" server.py > "%LOG%" 2>&1
+start "" /b "%VENV%\Scripts\python.exe" server.py > "%LOG%" 2>&1
 
 REM — Attendre que le serveur soit prêt (max 30 s) —
 set RETRY=0
@@ -148,3 +137,32 @@ for /f "tokens=5" %%p in ('netstat -ano 2^>nul ^| findstr ":5057 " ^| findstr "L
     taskkill /F /PID %%p >nul 2>&1
 )
 echo Serveur arrete.
+exit /b 0
+
+
+:ensure_venv
+REM   Cree le venv s'il manque, ou le supprime+recree s'il est casse.
+if exist "%VENV%\Scripts\python.exe" (
+    "%VENV%\Scripts\python.exe" -c "import sys" >nul 2>&1
+    if not errorlevel 1 goto :eof
+    echo   environnement inutilisable - recreation...
+    rmdir /s /q "%VENV%" 2>nul
+)
+%PYTHON% -m venv "%VENV%"
+if errorlevel 1 (
+    echo ERREUR : Impossible de creer l'environnement virtuel.
+    pause
+    exit /b 1
+)
+goto :eof
+
+
+:install_and_verify
+REM   Installe requirements.txt PUIS verifie que tout s'importe. DEPS_OK=1 si OK.
+set DEPS_OK=0
+"%VENV%\Scripts\python.exe" -m pip install -r requirements.txt --quiet --disable-pip-version-check >nul 2>&1
+if errorlevel 1 goto :eof
+"%VENV%\Scripts\python.exe" -c "import flask, ezdxf, requests, pyproj, shapely" >nul 2>&1
+if errorlevel 1 goto :eof
+set DEPS_OK=1
+goto :eof

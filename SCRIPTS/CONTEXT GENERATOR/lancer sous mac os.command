@@ -45,11 +45,44 @@ if [ ! -x "$VENV/bin/python" ] || ! "$VENV/bin/python" -c "import sys" &>/dev/nu
     fi
 fi
 
+# Installe les dépendances, PUIS vérifie qu'elles s'importent réellement : pip
+# peut réussir tout en laissant un environnement incohérent (interpréteur changé,
+# installation SMB à moitié faite, extension binaire cassée…). Si l'un des deux
+# échoue, on reconstruit le venv de zéro et on réessaie une fois.
+install_deps() {
+    "$VENV/bin/pip" install -r requirements.txt --quiet --disable-pip-version-check 2>&1
+}
+verify_imports() {
+    "$VENV/bin/python" - <<'PY' 2>&1
+import sys
+try:
+    import flask, ezdxf, requests, pyproj, shapely  # noqa: F401
+except Exception as e:
+    print(f"echec import : {type(e).__name__}: {e}")
+    sys.exit(1)
+PY
+}
+
 echo "Vérification des dépendances..."
-PIP_LOG=$("$VENV/bin/pip" install -r requirements.txt --quiet --disable-pip-version-check 2>&1)
-if [ $? -ne 0 ]; then
-    osascript -e "display alert \"Cadastre Tool — dépendances\" message \"L'installation des dépendances Python a échoué :\n\n$(echo "$PIP_LOG" | tail -n 20 | sed 's/"/\\"/g')\" as critical"
-    echo "$PIP_LOG"
+PIP_LOG=$(install_deps);      PIP_RC=$?
+IMPORT_LOG=$(verify_imports); IMPORT_RC=$?
+
+if [ $PIP_RC -ne 0 ] || [ $IMPORT_RC -ne 0 ]; then
+    echo "Environnement Python incohérent — reconstruction complète..."
+    rm -rf "$VENV"
+    if ! python3 -m venv "$VENV"; then
+        osascript -e 'display alert "Cadastre Tool" message "Impossible de créer l’environnement Python." as critical'
+        read -p "Appuyez sur Entrée pour fermer."
+        exit 1
+    fi
+    PIP_LOG=$(install_deps);      PIP_RC=$?
+    IMPORT_LOG=$(verify_imports); IMPORT_RC=$?
+fi
+
+if [ $PIP_RC -ne 0 ] || [ $IMPORT_RC -ne 0 ]; then
+    DETAIL=$(printf '%s\n%s' "$PIP_LOG" "$IMPORT_LOG" | tail -n 20 | sed 's/"/\\"/g')
+    osascript -e "display alert \"Cadastre Tool — dépendances\" message \"Les bibliothèques Python (flask, ezdxf, requests, pyproj, shapely) n'ont pas pu être installées ou chargées.\n\n$DETAIL\" as critical"
+    printf '%s\n%s\n' "$PIP_LOG" "$IMPORT_LOG"
     read -p "Appuyez sur Entrée pour fermer."
     exit 1
 fi

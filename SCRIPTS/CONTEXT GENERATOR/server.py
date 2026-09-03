@@ -11,6 +11,40 @@ import time
 import uuid
 import zipfile
 from collections import OrderedDict
+
+# ── Vérification des dépendances ────────────────────────────────────────────
+# Si l'outil est lancé avec un Python qui n'a pas les bibliothèques (ex :
+# server.py double-cliqué au lieu du script « lancer sous… »), on affiche un
+# message clair — au lieu d'un « ModuleNotFoundError: No module named 'flask' ».
+_REQUIRED = ('flask', 'requests', 'ezdxf')   # pyproj/shapely : gérés plus bas (dégradé possible)
+_missing = []
+for _m in _REQUIRED:
+    try:
+        __import__(_m)
+    except ImportError:
+        _missing.append(_m)
+if _missing:
+    import sys as _sys
+    _msg = (
+        "Bibliotheques Python manquantes : " + ", ".join(_missing) + "\n\n"
+        "Ne lancez pas server.py directement.\n"
+        "Double-cliquez plutot :\n"
+        "  - Windows :  \"lancer sous windows.bat\"\n"
+        "  - macOS   :  \"lancer sous mac os.command\"\n"
+        "Il cree l'environnement et installe tout automatiquement.\n\n"
+        "Installation manuelle :  python -m pip install -r requirements.txt"
+    )
+    try:
+        import tkinter as _tk
+        from tkinter import messagebox as _mb
+        _root = _tk.Tk()
+        _root.withdraw()
+        _mb.showerror("Cadastre Tool - dependances manquantes", _msg)
+    except Exception:
+        pass
+    print(_msg, file=_sys.stderr)
+    _sys.exit(1)
+
 from flask import Flask, request, jsonify, send_file, send_from_directory
 import requests
 import ezdxf
@@ -1835,15 +1869,16 @@ def archicad_generate():
             # géométrie cadastrale, y compris la limite entre deux parcelles
             # mitoyennes fusionnées dans un même maillage. Sur TOUTES les parcelles
             # de l'emprise du terrain global (annotation_parcel_polys_l93), pas
-            # seulement les parcelles sélectionnées/du projet. On ne clippe qu'au
-            # périmètre du terrain (sans redensifier) pour rester dans l'emprise
-            # générée, sinon les sommets d'origine sont conservés tels quels.
+            # seulement les parcelles sélectionnées/du projet. On clippe au
+            # périmètre EXACT du terrain (pas le retrait de 5 cm réservé aux trous
+            # de maillage) : sur du 2D pur il n'y a aucune contrainte
+            # d'intériorité stricte, et l'inset créait une bande vide en pourtour.
             for parcel_poly in annotation_parcel_polys_l93:
                 try:
                     parcel_local = _ShapelyPolygon([
                         (x - anchor_x, y - anchor_y) for x, y in parcel_poly.exterior.coords
                     ]).buffer(0)
-                    clipped_parcel = parcel_local.intersection(terrain_local_poly_inset)
+                    clipped_parcel = parcel_local.intersection(terrain_local_poly)
                     if clipped_parcel.is_empty:
                         continue
                     clipped_parcel_parts = (
