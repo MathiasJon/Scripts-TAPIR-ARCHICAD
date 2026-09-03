@@ -2,7 +2,8 @@
 # Cadastre Tool — macOS
 # Double-clic pour démarrer
 
-cd "$(dirname "$0")"
+APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$APP_DIR"
 
 # Vérifier Python 3
 if ! command -v python3 &>/dev/null; then
@@ -20,14 +21,32 @@ if [ "$PY_OK" != "1" ]; then
     echo ""
 fi
 
-# Créer l'environnement virtuel si besoin, puis synchroniser les dépendances
-if [ ! -d ".venv" ]; then
-    echo "Première utilisation — création de l'environnement..."
-    python3 -m venv .venv
+# ── Environnement Python ────────────────────────────────────────────────────
+# L'environnement virtuel (.venv) n'est JAMAIS placé dans le dossier de l'outil :
+# celui-ci est souvent sur un disque réseau partagé, or un venv contient des
+# binaires et des chemins propres à une machine (le partager entre postes le
+# casse) et l'écriture de milliers de fichiers sur SMB est très lente.
+# On le crée donc en local, dans le dossier standard "Application Support" de
+# l'utilisateur (non synchronisé par iCloud, contrairement à ~/Documents).
+# Un venv distinct par emplacement d'installation (empreinte du chemin) évite
+# les collisions si l'outil est copié à plusieurs endroits.
+VENV_ROOT="$HOME/Library/Application Support/CadastreTool"
+VENV_ID=$(printf '%s' "$APP_DIR" | shasum | cut -c1-12)
+VENV="$VENV_ROOT/venv-$VENV_ID"
+mkdir -p "$VENV_ROOT"
+
+if [ ! -x "$VENV/bin/python" ] || ! "$VENV/bin/python" -c "import sys" &>/dev/null; then
+    [ -d "$VENV" ] && { echo "Environnement inutilisable — recréation..."; rm -rf "$VENV"; }
+    echo "Création de l'environnement Python (local à ce poste)..."
+    if ! python3 -m venv "$VENV"; then
+        osascript -e 'display alert "Cadastre Tool" message "Impossible de créer l’environnement Python." as critical'
+        read -p "Appuyez sur Entrée pour fermer."
+        exit 1
+    fi
 fi
 
 echo "Vérification des dépendances..."
-PIP_LOG=$(.venv/bin/pip install -r requirements.txt --quiet --disable-pip-version-check 2>&1)
+PIP_LOG=$("$VENV/bin/pip" install -r requirements.txt --quiet --disable-pip-version-check 2>&1)
 if [ $? -ne 0 ]; then
     osascript -e "display alert \"Cadastre Tool — dépendances\" message \"L'installation des dépendances Python a échoué :\n\n$(echo "$PIP_LOG" | tail -n 20 | sed 's/"/\\"/g')\" as critical"
     echo "$PIP_LOG"
@@ -42,7 +61,7 @@ LOG=/tmp/cadastre-tool.log
 lsof -ti:$PORT | xargs kill -9 2>/dev/null
 
 # Démarrer Flask
-.venv/bin/python server.py > "$LOG" 2>&1 &
+"$VENV/bin/python" server.py > "$LOG" 2>&1 &
 SERVER_PID=$!
 
 # Attendre que le serveur soit prêt (max 10 s)

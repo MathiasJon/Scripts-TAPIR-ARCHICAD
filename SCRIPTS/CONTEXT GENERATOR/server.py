@@ -121,6 +121,33 @@ def _point_wgs84_to_l93(lon, lat):
     return _wgs84_to_l93.transform(lon, lat)
 
 
+def _apicarto_get(path, params, timeout=15, retries=3):
+    """GET sur apicarto.ign.fr avec réessais.
+
+    L'API Carto de l'IGN renvoie fréquemment des 500/502/504 transitoires (service
+    momentanément surchargé) sur des requêtes pourtant valides. On réessaie
+    quelques fois avec une petite pause avant d'abandonner.
+    """
+    url = f'https://apicarto.ign.fr{path}'
+    last_err = None
+    for attempt in range(retries):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout)
+            if resp.status_code >= 500:
+                last_err = requests.HTTPError(f'{resp.status_code} Server Error', response=resp)
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            return resp
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_err = e
+            time.sleep(1.5 * (attempt + 1))
+    raise requests.RequestException(
+        f"service IGN (API Carto cadastre) momentanément indisponible — réessayez "
+        f"dans un instant. [{last_err}]"
+    )
+
+
 def _point_elevation(lon, lat):
     """Altitude RGE ALTI/LiDAR HD (m) d'un point WGS84, ou None si indisponible."""
     r = requests.get(
@@ -346,12 +373,8 @@ def _fetch_routes_bdtopo(perimeter_geojson):
 def _fetch_parcelles_geometries(perimeter_geojson):
     """Géométries (GeoJSON WGS84) des parcelles cadastrales intersectant le périmètre."""
     try:
-        resp = requests.get(
-            'https://apicarto.ign.fr/api/cadastre/parcelle',
-            params={'geom': json.dumps(perimeter_geojson), '_limit': 2000},
-            timeout=15,
-        )
-        resp.raise_for_status()
+        resp = _apicarto_get('/api/cadastre/parcelle',
+                             {'geom': json.dumps(perimeter_geojson), '_limit': 2000})
     except requests.RequestException:
         return []
     return [f['geometry'] for f in resp.json().get('features', []) if f.get('geometry')]
@@ -664,6 +687,44 @@ def index():
     return send_from_directory('frontend', 'index.html')
 
 
+def _feuilles_features_from_parcelles(geom):
+    """Reconstruit des « features » de feuilles à partir des parcelles.
+
+    Repli quand l'endpoint /cadastre/feuille de l'API Carto est en panne (il
+    renvoie parfois des 500 persistants sur certaines communes alors que
+    /cadastre/parcelle répond) : on regroupe les parcelles par feuille et on
+    prend l'union de leurs géométries comme emprise approximative de la feuille
+    (limitée au périmètre demandé — suffisant pour l'affichage et l'emprise WMS).
+    """
+    resp = _apicarto_get('/api/cadastre/parcelle',
+                         {'geom': json.dumps(geom), '_limit': 2000})
+    groups = OrderedDict()
+    for f in resp.json().get('features', []):
+        p = f.get('properties', {})
+        key = (str(p.get('code_dep', '')), str(p.get('code_com', '')),
+               str(p.get('code_arr', '')), str(p.get('com_abs', '')),
+               str(p.get('section', '')), int(p.get('feuille', 0)))
+        g = groups.setdefault(key, {'props': p, 'geoms': []})
+        if f.get('geometry'):
+            g['geoms'].append(f['geometry'])
+
+    out = []
+    for (code_dep, code_com, code_arr, com_abs, section, feuille_n), g in groups.items():
+        geometry = None
+        if _SHAPELY_OK and g['geoms']:
+            try:
+                geometry = _shapely_mapping(_unary_union(
+                    [_shapely_shape(x).buffer(0) for x in g['geoms']]))
+            except Exception:
+                geometry = g['geoms'][0]
+        elif g['geoms']:
+            geometry = g['geoms'][0]
+        pr = dict(g['props'])
+        pr['feuille'] = feuille_n
+        out.append({'type': 'Feature', 'properties': pr, 'geometry': geometry})
+    return out
+
+
 @app.route('/api/feuilles', methods=['POST'])
 def get_feuilles():
     """Identifie les feuilles cadastrales intersectant un polygone GeoJSON."""
@@ -674,16 +735,15 @@ def get_feuilles():
     geom = data['geojson']
 
     try:
-        resp = requests.get(
-            'https://apicarto.ign.fr/api/cadastre/feuille',
-            params={'geom': json.dumps(geom), '_limit': 50},
-            timeout=15
-        )
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        return jsonify({'error': f'Erreur API IGN: {str(e)}'}), 502
-
-    features = resp.json().get('features', [])
+        resp = _apicarto_get('/api/cadastre/feuille',
+                             {'geom': json.dumps(geom), '_limit': 50}, retries=2)
+        features = resp.json().get('features', [])
+    except requests.RequestException:
+        # Endpoint /feuille en panne : on reconstruit depuis /parcelle.
+        try:
+            features = _feuilles_features_from_parcelles(geom)
+        except requests.RequestException as e:
+            return jsonify({'error': f'Erreur API IGN: {str(e)}'}), 502
     feuilles, seen = [], set()
 
     for f in features:
@@ -732,6 +792,207 @@ def get_feuilles():
     })
 
 
+def _geom_centroid_lonlat(geom):
+    """Centre approximatif (lon, lat) d'une géométrie GeoJSON, ou (None, None)."""
+    if _SHAPELY_OK:
+        try:
+            c = _shapely_shape(geom).centroid
+            if not c.is_empty:
+                return c.x, c.y
+        except Exception:
+            pass
+    pts = []
+    def _walk(a):
+        if isinstance(a, (list, tuple)):
+            if a and isinstance(a[0], (int, float)):
+                pts.append(a)
+            else:
+                for x in a:
+                    _walk(x)
+    _walk(geom.get('coordinates'))
+    if not pts:
+        return None, None
+    return sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+
+
+STATION_RADIUS_M = 500   # rayon de la zone de desserte autour d'une gare / station
+
+# Natures BD TOPO (equipement_de_transport) considérées comme « gare / métro ».
+_STATION_NATURES = (
+    'Station de métro', 'Station de tramway',
+    'Gare voyageurs uniquement', 'Gare voyageurs et fret',
+)
+
+
+@app.route('/api/stations', methods=['POST'])
+def get_stations():
+    """Gares (RER/TER/Transilien/SNCF), stations de métro et de tramway (BD TOPO
+    IGN) dans une emprise donnée — pour tracer un rayon de desserte autour."""
+    data = request.get_json() or {}
+    bbox = data.get('bbox')
+    if not bbox or len(bbox) != 4:
+        return jsonify({'error': 'bbox [minlon, minlat, maxlon, maxlat] requis'}), 400
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bbox invalide'}), 400
+
+    # Garde-fou : au-delà d'une certaine emprise, on ne rapatrie rien (évite une
+    # requête massive quand l'utilisateur est très dézoomé).
+    if (max_lon - min_lon) > 0.7 or (max_lat - min_lat) > 0.7:
+        return jsonify({'stations': [], 'too_wide': True})
+
+    natures = ','.join(f"'{n}'" for n in _STATION_NATURES)
+    params = {
+        'SERVICE': 'WFS', 'VERSION': '2.0.0', 'REQUEST': 'GetFeature',
+        'TYPENAMES': 'BDTOPO_V3:equipement_de_transport',
+        'OUTPUTFORMAT': 'application/json', 'SRSNAME': 'CRS:84', 'COUNT': 500,
+        'CQL_FILTER': (f'BBOX(geometrie,{min_lat},{min_lon},{max_lat},{max_lon}) '
+                       f'AND nature IN ({natures})'),
+    }
+    try:
+        resp = requests.get('https://data.geopf.fr/wfs/ows', params=params, timeout=20)
+        resp.raise_for_status()
+        feats = resp.json().get('features', [])
+    except (requests.RequestException, ValueError) as e:
+        return jsonify({'error': f'Service IGN indisponible : {e}'}), 502
+
+    stations, seen = [], set()
+    for f in feats:
+        geom = f.get('geometry')
+        if not geom:
+            continue
+        lon, lat = _geom_centroid_lonlat(geom)
+        if lon is None:
+            continue
+        p = f.get('properties', {})
+        nature = p.get('nature', '')
+        kind = ('metro' if 'métro' in nature
+                else 'tram' if 'tramway' in nature
+                else 'gare')
+        key = (round(lon, 5), round(lat, 5))
+        if key in seen:
+            continue
+        seen.add(key)
+        stations.append({
+            'name':   p.get('toponyme') or '',
+            'detail': p.get('nature_detaillee') or nature,
+            'kind':   kind,
+            'lon':    lon,
+            'lat':    lat,
+        })
+
+    # Zone de desserte = union des disques de 500 m (en Lambert-93, donc en
+    # mètres réels) → un seul polygone : pas de superposition des remplissages là
+    # où les cercles se chevauchent.
+    buffer_geojson = None
+    if _SHAPELY_OK and _PYPROJ_OK and stations:
+        try:
+            disks = [
+                _ShapelyPoint(*_wgs84_to_l93.transform(s['lon'], s['lat'])).buffer(STATION_RADIUS_M)
+                for s in stations
+            ]
+            union_l93 = _unary_union(disks)
+            union_wgs = _shapely_transform(
+                lambda x, y, z=None: _l93_to_wgs84.transform(x, y), union_l93)
+            buffer_geojson = _shapely_mapping(union_wgs)
+        except Exception:
+            buffer_geojson = None
+
+    return jsonify({'stations': stations, 'buffer_geojson': buffer_geojson,
+                    'radius_m': STATION_RADIUS_M})
+
+
+def _bbox_polygon(min_lon, min_lat, max_lon, max_lat):
+    return {'type': 'Polygon', 'coordinates': [[
+        [min_lon, min_lat], [max_lon, min_lat], [max_lon, max_lat],
+        [min_lon, max_lat], [min_lon, min_lat],
+    ]]}
+
+
+def _fix_mojibake(s):
+    """L'API Carto GPU renvoie parfois de l'UTF-8 relu en Latin-1 (« HÃ´tel »)."""
+    if not s or not isinstance(s, str):
+        return s
+    try:
+        return s.encode('latin-1').decode('utf-8') if 'Ã' in s or 'Â' in s else s
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return s
+
+
+@app.route('/api/monuments', methods=['POST'])
+def get_monuments():
+    """Monuments historiques (générateurs SUP AC1) et leur périmètre d'abords
+    (assiette SUP AC1 = PDA là où défini, sinon rayon de 500 m) via l'API Carto
+    GPU de l'IGN, dans une emprise donnée."""
+    data = request.get_json() or {}
+    bbox = data.get('bbox')
+    if not bbox or len(bbox) != 4:
+        return jsonify({'error': 'bbox [minlon, minlat, maxlon, maxlat] requis'}), 400
+    try:
+        min_lon, min_lat, max_lon, max_lat = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bbox invalide'}), 400
+    if (max_lon - min_lon) > 0.25 or (max_lat - min_lat) > 0.25:
+        return jsonify({'monuments': [], 'abords_geojson': None, 'too_wide': True})
+
+    geom = json.dumps(_bbox_polygon(min_lon, min_lat, max_lon, max_lat))
+
+    def _gpu(path):
+        try:
+            r = _apicarto_get(path, {'geom': geom, '_limit': 1000}, timeout=25, retries=2)
+            return r.json().get('features', [])
+        except (requests.RequestException, ValueError):
+            return []
+
+    def _is_ac1(f):
+        p = f.get('properties', {})
+        ident = str(p.get('idgen') or p.get('idass') or '')
+        return ident.startswith('AC1')
+
+    # Emprises des monuments — gardées individuelles (identifiables au survol).
+    monuments = []
+    for f in _gpu('/api/gpu/generateur-sup-s'):
+        if not _is_ac1(f) or not f.get('geometry'):
+            continue
+        geom_out = f['geometry']
+        lon, lat = _geom_centroid_lonlat(geom_out)
+        if _SHAPELY_OK:
+            try:
+                geom_out = _shapely_mapping(
+                    _shapely_shape(geom_out).buffer(0).simplify(2e-5, preserve_topology=True))
+            except Exception:
+                pass
+        monuments.append({
+            'name': _fix_mojibake(f['properties'].get('nomsuplitt')) or 'Monument historique',
+            'lon': lon, 'lat': lat,
+            'geometry': geom_out,
+        })
+    truncated_monuments = len(monuments) > 500
+    monuments = monuments[:500]
+
+    # Abords — union en un seul polygone (ils se recouvrent massivement).
+    abords_geojson = None
+    if _SHAPELY_OK:
+        abords_polys = []
+        for f in _gpu('/api/gpu/assiette-sup-s'):
+            if not _is_ac1(f) or not f.get('geometry'):
+                continue
+            try:
+                abords_polys.append(_shapely_shape(f['geometry']).buffer(0))
+            except Exception:
+                pass
+        if abords_polys:
+            try:
+                abords_geojson = _shapely_mapping(
+                    _unary_union(abords_polys).simplify(3e-5, preserve_topology=True))
+            except Exception:
+                abords_geojson = None
+
+    return jsonify({'monuments': monuments, 'abords_geojson': abords_geojson,
+                    'truncated': truncated_monuments})
+
+
 @app.route('/api/parcelles', methods=['POST'])
 def get_parcelles():
     """
@@ -768,8 +1029,7 @@ def get_parcelles():
     features = []
     for params in param_variants:
         try:
-            resp = requests.get('https://apicarto.ign.fr/api/cadastre/parcelle', params=params, timeout=15)
-            resp.raise_for_status()
+            resp = _apicarto_get('/api/cadastre/parcelle', params)
         except requests.RequestException as e:
             return jsonify({'error': f'Erreur API IGN: {str(e)}'}), 502
         features.extend(resp.json().get('features', []))
@@ -1080,12 +1340,22 @@ def archicad_elevation_stats():
     if not valid_z:
         return jsonify({'error': "Altimétrie indisponible sur ce périmètre."}), 404
 
-    return jsonify({
+    result = {
         'min':     min(valid_z),
         'max':     max(valid_z),
         'average': sum(valid_z) / len(valid_z),
         'count':   len(valid_z),
-    })
+    }
+
+    # Altitude au point d'ancrage (= origine locale du projet), si fourni : permet
+    # de proposer « le point d'origine » comme référence Z=0 dans le navigateur.
+    anchor_point = data.get('anchor_point')
+    if anchor_point:
+        anchor_z = _point_elevation(anchor_point['lon'], anchor_point['lat'])
+        if anchor_z is not None:
+            result['anchor'] = anchor_z
+
+    return jsonify(result)
 
 
 @app.route('/api/archicad/generate', methods=['POST'])
@@ -1131,6 +1401,49 @@ def archicad_generate():
 
     errors = []
 
+    # Un projet doit être ouvert dans Archicad, sinon CHAQUE étape échoue avec un
+    # « Invalid program status (no open project) » peu parlant. On coupe court —
+    # mais uniquement sur cette signature précise : toute autre anomalie de la
+    # sonde ne doit pas empêcher une génération par ailleurs valide.
+    try:
+        _archicad_run_command('API.GetProjectInfo')
+    except Exception as e:
+        low = str(e).lower()
+        if 'no open project' in low or 'no plan' in low or 'invalid program status' in low:
+            return jsonify({'error': "Aucun projet ouvert dans Archicad. Ouvrez ou créez "
+                                     "un projet, puis relancez la génération."}), 409
+
+    # Confirmation UNIQUE, dans Archicad, AVANT toute création (géoréférencement,
+    # maillages, bâtiments). Ensuite plus aucune fenêtre ne bloque la génération.
+    try:
+        what = ('le terrain' if skip_buildings
+                else 'le terrain et les bâtiments cadastraux')
+        confirm = _tapir_run_command('ShowAlert', {
+            'alertType': 'information',
+            'title': 'Cadastre Tool',
+            'message': f'Générer {what} dans le projet Archicad ouvert ?',
+            'subMessage': 'Le Point de Repère va être déplacé et des éléments créés.',
+            'button1': 'Générer',
+            'button2': 'Annuler',
+        })
+        if confirm and confirm.get('clickedButton') == 2:
+            return jsonify({'cancelled': True, 'mesh_points': 0, 'buildings': 0,
+                            'errors': [], 'message': 'Génération annulée dans Archicad.'})
+    except Exception:
+        pass  # ShowAlert indisponible (Tapir ancien) : on génère sans confirmation
+
+    # Valeurs de repli au niveau de la fonction : si le maillage de terrain échoue,
+    # les étapes suivantes (bâtiments) référencent quand même `rows` / `to_local` /
+    # `bilinear_z` — sans ça, NameError « free variable ... not associated ».
+    rows = []
+    z_ref = anchor_z
+
+    def to_local(x, y, z):
+        return {'x': x - anchor_x, 'y': y - anchor_y, 'z': (z - z_ref) if z is not None else 0.0}
+
+    def bilinear_z(px, py):
+        return None
+
     # ── Géoréférencement : Point de Repère = ancrage (coordonnées L93 réelles) ──
     try:
         _tapir_run_command('SetGeoLocation', {
@@ -1171,6 +1484,8 @@ def archicad_generate():
         valid_z = [z for row in rows for _, _, z in row if z is not None]
         if z_ref_mode == 'manual' and z_ref_manual_value is not None:
             z_ref = float(z_ref_manual_value)
+        elif z_ref_mode == 'anchor':
+            z_ref = anchor_z          # altitude du point d'origine (ancrage)
         elif valid_z:
             z_ref = {
                 'min':     min(valid_z),
@@ -1736,24 +2051,8 @@ def archicad_generate():
             i: _min_terrain_z_under_footprint(part) for i, (part, _h) in enumerate(building_parts)
         }
 
-        # Confirmation dans Archicad même avant de lancer la boucle (potentiellement
-        # longue) : donne un point d'arrêt natif, en plus du bouton "Annuler" du navigateur.
-        if building_parts:
-            try:
-                alert = _tapir_run_command('ShowAlert', {
-                    'alertType': 'information',
-                    'title': 'Cadastre Tool',
-                    'message': f'{len(building_parts)} bâtiment(s) vont être générés (maillages).',
-                    'subMessage': 'Continuer la génération ?',
-                    'button1': 'Continuer',
-                    'button2': 'Annuler',
-                })
-                if alert and alert.get('clickedButton') == 2:
-                    cancelled = True
-                    building_parts = []
-            except Exception:
-                pass  # ShowAlert indisponible (version Tapir plus ancienne) : on continue sans confirmation
-
+        # (Plus de confirmation ici : elle est demandée une seule fois, en amont,
+        # avant toute création dans Archicad.)
         _archicad_progress.update({'stage': 'Bâtiments…', 'done': 0, 'total': len(building_parts)})
 
         # Marge de sécurité sous le point le plus bas échantillonné du terrain, pour

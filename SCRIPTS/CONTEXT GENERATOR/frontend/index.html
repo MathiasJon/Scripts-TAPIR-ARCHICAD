@@ -7,6 +7,7 @@
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css"/>
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -54,6 +55,11 @@
     /* Fond de carte en niveaux de gris pendant le mode altimétrie : fait ressortir
        le dégradé de couleur des points par contraste. */
     .map-wrapper.zref-active .leaflet-tile-pane { filter: grayscale(1) brightness(1.05); }
+    /* Marqueur d'origine choisi comme altimétrie de référence : bien mis en avant. */
+    .anchor-marker.ref-selected > div {
+      transform: scale(1.55);
+      box-shadow: 0 0 0 4px rgba(217,43,43,0.30), 0 0 5px rgba(0,0,0,0.55);
+    }
 
     body {
       font-family: 'Helvetica Neue', Arial, sans-serif;
@@ -429,6 +435,16 @@
         <p style="margin-top:2px;font-size:11px;color:#888;">A3 horizontal (420 × 297 mm) — cliquez une échelle pour l'afficher, recliquez pour la masquer. Fixe au centre de la zone de plan.</p>
       </div>
 
+      <!-- Fond de plan -->
+      <div class="sidebar-section">
+        <h2>Fond de plan</h2>
+        <p style="margin-top:2px;font-size:11px;color:#888;">
+          « Plan archi » par défaut (N&amp;B, limites communales en rouge, végétation
+          en vert, eau en bleu). Sélecteur en haut à droite de la carte pour changer
+          (Plan IGN, OSM, photo aérienne, satellite). Choix mémorisé.
+        </p>
+      </div>
+
       <!-- Calques de risque -->
       <div class="sidebar-section">
         <h2>Calques de risque</h2>
@@ -436,6 +452,26 @@
           <input type="checkbox" id="chk-inond" onchange="toggleRiskLayer('inond', this.checked)"/>
           Zones inondables
           <span class="ortho-hint">— Aléas fréquents et centennaux</span>
+        </label>
+      </div>
+
+      <!-- Desserte transports en commun -->
+      <div class="sidebar-section">
+        <h2>Desserte transports</h2>
+        <label class="ortho-option" style="margin-bottom:0;">
+          <input type="checkbox" id="chk-stations-500" onchange="toggleStationBuffers(this.checked)"/>
+          Rayon 500 m — gares &amp; métro
+          <span class="ortho-hint">— zones à moins de 500 m d'une gare / station (visible sur la carte)</span>
+        </label>
+      </div>
+
+      <!-- Monuments historiques -->
+      <div class="sidebar-section">
+        <h2>Monuments historiques</h2>
+        <label class="ortho-option" style="margin-bottom:0;">
+          <input type="checkbox" id="chk-monuments" onchange="toggleMonuments(this.checked)"/>
+          Emprises &amp; abords
+          <span class="ortho-hint">— monument (survol = nom) + périmètre d'abords officiel (PDA ou rayon 500 m). Avis ABF ; co-visibilité à apprécier par l'ABF.</span>
         </label>
       </div>
 
@@ -652,7 +688,7 @@
   <div id="zref-modal-backdrop" style="display:none;position:fixed;inset:0;pointer-events:none;z-index:1000;align-items:flex-start;justify-content:flex-end;padding:16px;">
     <div style="pointer-events:auto;background:#fff;border-radius:8px;padding:24px;width:340px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.25);">
       <h2 style="font-size:14px;font-weight:700;margin:0 0 4px;">Altimétrie de référence (point 0)</h2>
-      <p style="font-size:11px;color:#888;margin:0 0 12px;">Choisissez quelle valeur sert de Z=0 local pour l'implantation dans Archicad. Des points sont affichés sur le contour des parcelles — cliquez sur un point pour reprendre son altitude en valeur manuelle. La sélection de parcelles est verrouillée tant que cette fenêtre est ouverte.</p>
+      <p style="font-size:11px;color:#888;margin:0 0 12px;">Choisissez quelle valeur sert de Z=0 local pour l'implantation dans Archicad. Sur la carte : cliquez le <b>point d'origine</b> (marqueur rouge) pour l'utiliser comme référence, ou un point de contour pour reprendre son altitude. La sélection de parcelles est verrouillée tant que cette fenêtre est ouverte.</p>
 
       <div style="margin-bottom:12px;">
         <div style="height:10px;border-radius:5px;background:linear-gradient(to right, rgb(37,99,235), rgb(220,38,38));"></div>
@@ -690,6 +726,11 @@
         <input type="radio" name="zref-mode" value="max" onchange="onZRefModeChange()"/>
         Maximum
       </label>
+      <!-- Sélectionné en cliquant le marqueur d'origine sur la carte (pas de ligne de menu). -->
+      <input type="radio" name="zref-mode" value="anchor" id="zref-mode-anchor" hidden/>
+      <label class="ortho-option" id="zref-anchor-hint" style="margin-bottom:2px;display:none;color:#c0392b;font-weight:600;">
+        ⌖ Point d'origine sélectionné <span class="ortho-hint" style="color:#c0392b;">(<span id="zref-anchor-value">—</span>)</span>
+      </label>
       <label class="ortho-option" style="margin-bottom:0;display:flex;align-items:center;gap:6px;">
         <input type="radio" name="zref-mode" value="manual" onchange="onZRefModeChange()" id="zref-mode-manual"/>
         Manuel :
@@ -706,14 +747,199 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
   <script>
   // ── Map init ──────────────────────────────────────────────────────────────
   const map = L.map('map', { maxZoom: 23 }).setView([48.8566, 2.3522], 13);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© OpenStreetMap, © CartoDB',
-    maxZoom: 23, maxNativeZoom: 20
-  }).addTo(map);
+  // ── Fonds de plan ─────────────────────────────────────────────────────────
+  // Tous SANS clé d'API. Sélecteur en haut à droite ; le choix est mémorisé.
+  // (Remplace l'ancien fond CartoDB « Positron », qui exige désormais une clé.)
+  const ignWmts = (layer, fmt) =>
+    'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
+    '&LAYER=' + layer + '&STYLE=normal&TILEMATRIXSET=PM&FORMAT=' + fmt +
+    '&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+
+  const baseLayers = {
+    'Plan IGN': L.tileLayer(ignWmts('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', 'image/png'), {
+      attribution: '© IGN — Plan IGN v2', maxZoom: 23, maxNativeZoom: 19
+    }),
+    'OSM (rendu France)': L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap France', maxZoom: 23, maxNativeZoom: 20
+    }),
+    'OSM humanitaire': L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap, HOT', maxZoom: 23, maxNativeZoom: 20
+    }),
+    'Photo aérienne (IGN)': L.tileLayer(ignWmts('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'), {
+      attribution: '© IGN — BD ORTHO', maxZoom: 23, maxNativeZoom: 20
+    }),
+    'Satellite (Esri)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '© Esri, Maxar, Earthstar Geographics', maxZoom: 23, maxNativeZoom: 19
+    }),
+  };
+
+  const savedBase = localStorage.getItem('cadastre-basemap');
+  const layersCtl = L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
+  let persistBase = false;   // ignore les changements de fond « techniques » de l'init
+  map.on('baselayerchange', e => {
+    if (!persistBase) return;
+    try { localStorage.setItem('cadastre-basemap', e.name); } catch (_) {}
+  });
+
+  // ── Fond « Plan archi » : tuiles vectorielles IGN restylées ────────────────
+  // On part du style IGN « gris » (déjà entièrement en niveaux de gris, équilibré
+  // et lisible) et on n'ajoute QUE 3 accents de couleur :
+  //   • limites de COMMUNE en rouge (uniquement la commune — pas département /
+  //     région, qui à faible zoom donneraient une fausse lecture) ;
+  //   • végétation en vert ; eau (surfaces + réseau + étiquettes) en bleu.
+  const ARCHI_NAME = 'Plan archi (N&B + accents)';
+  const ARCHI = { green: '#8aa76f', water: '#7fb0cc', waterLabel: '#356b85', red: '#c0392b' };
+  const HYDRO_LINE_SL = ['hydro_reseau', 'hydro_reseau_sup', 'hydro_reseau_sou', 'hydro_ponc'];
+  let archiVegLayerIds = [];   // couches de végétation (pour l'atténuation en phase Génération)
+
+  async function buildArchiStyle() {
+    const url = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/gris.json';
+    const style = await fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+    archiVegLayerIds = [];
+    const out = [];
+    for (const lyr of style.layers) {
+      const sl = lyr['source-layer'] || '';
+      const p = lyr.paint = lyr.paint || {};
+      const icon = (lyr.layout || {})['icon-image'];
+
+      // Symboles d'hôpital : sans intérêt ici et bruyants au dézoom → repoussés
+      // à un zoom très rapproché (donc invisibles aux échelles de travail).
+      if (icon === 'Hopital' || /hopital/i.test(lyr.id)) {
+        lyr.minzoom = Math.max(lyr.minzoom || 0, 17);
+        out.push(lyr);
+        continue;
+      }
+
+      // Gares (RER / TER / Transilien / SNCF). Dans les données IGN elles sont
+      // portées par `toponyme_bati_ponc` avec `symbo == GARE_VOYAGEURS` (et NON
+      // par `bati_ponc`, qui n'en contient aucune) ; or la couche gare du style
+      // IGN filtre sur `txt_typo == "gore"` — valeur qui n'existe pas : les gares
+      // ne s'affichent jamais. On répare : filtre sur le bon champ, pictogramme
+      // + nom, dès le zoom 12, comme les stations de métro.
+      if (lyr.id === 'toponyme bati ponc gare') {
+        lyr.minzoom = 12;
+        lyr.filter = ['==', 'symbo', 'GARE_VOYAGEURS'];
+        lyr.layout = Object.assign({}, lyr.layout, {
+          'text-field': '{texte}',
+          'text-size': 11,
+          'text-font': ['Source Sans Pro Regular'],
+          'text-anchor': 'top',
+          'text-offset': [0, 0.7],
+          'text-optional': true,
+          'icon-image': 'Gare',
+          'icon-size': { stops: [[12, 0.5], [16, 0.85]] },
+          'icon-allow-overlap': true,
+        });
+        lyr.paint = {
+          'text-color': '#1a1a1a',
+          'text-halo-color': 'rgba(255, 255, 255, 1)',
+          'text-halo-width': 1.4,
+          'icon-color': '#333333',
+        };
+        out.push(lyr);
+        continue;
+      }
+
+      if (sl === 'ocs_vegetation_surf') {
+        p['fill-color'] = ARCHI.green;
+        if ('fill-outline-color' in p) p['fill-outline-color'] = ARCHI.green;
+        archiVegLayerIds.push(lyr.id);
+
+      } else if (sl === 'hydro_surf') {
+        p['fill-color'] = ARCHI.water;
+        if ('fill-outline-color' in p) p['fill-outline-color'] = ARCHI.water;
+
+      } else if (HYDRO_LINE_SL.includes(sl)) {
+        if ('line-color' in p) p['line-color'] = ARCHI.water;
+        if ('fill-color' in p) p['fill-color'] = ARCHI.water;
+
+      } else if (/^toponyme_hydro/.test(sl)) {
+        // Étiquettes de cours d'eau : bleu foncé + halo blanc franc (sinon,
+        // texte gris pâle sur halo translucide = effet « fantôme » illisible).
+        p['text-color'] = ARCHI.waterLabel;
+        p['text-halo-color'] = 'rgba(255, 255, 255, 1)';
+        p['text-halo-width'] = 1.6;
+
+      } else if (sl === 'limite_lin' && /limite de (commune|d[ée]partement tiret)/i.test(lyr.id)) {
+        // Limite communale : trait rouge net + halo rouge diffus dessous, pour
+        // qu'elle ressorte franchement sans être un gros trait épais. Pas de
+        // pointillés (le style IGN d'origine en met).
+        // La couche « département tiret » reçoit le MÊME traitement : à Paris et
+        // en petite couronne, la limite de commune coïncide avec celle du
+        // département et IGN ne garde que LIM_DEPARTEMENT — sans ça le contour de
+        // Paris disparaîtrait. (minzoom 13 d'origine → pas de rouge au dézoom
+        // national, où seule la couche « bandeau » gris pâle subsiste.)
+        const glow = JSON.parse(JSON.stringify(lyr));
+        glow.id = lyr.id + ' — halo';
+        glow.layout = Object.assign({}, lyr.layout, { 'line-cap': 'round', 'line-join': 'round' });
+        glow.paint = {
+          'line-color': ARCHI.red,
+          'line-opacity': 0.16,
+          'line-width': { stops: [[11, 2], [14, 5], [18, 10]] },
+          'line-blur':  { stops: [[11, 1], [18, 4]] },
+        };
+        out.push(glow);
+
+        p['line-color'] = ARCHI.red;
+        p['line-opacity'] = 0.95;
+        delete p['line-dasharray'];
+        p['line-blur'] = 0;
+        p['line-width'] = { stops: [[11, 0.8], [14, 1.6], [17, 2.8]] };
+        lyr.layout = Object.assign({}, lyr.layout, { 'line-cap': 'round', 'line-join': 'round' });
+      }
+      out.push(lyr);
+    }
+    style.layers = out;
+    return style;
+  }
+
+  // Atténue (ou rétablit) les surfaces de végétation du fond « Plan archi ».
+  let archiVegFaded = false;
+  function applyArchiVegFade() {
+    if (!archiLayer || typeof archiLayer.getMaplibreMap !== 'function') return;
+    const gl = archiLayer.getMaplibreMap();
+    if (!gl) return;
+    const run = () => archiVegLayerIds.forEach(id => {
+      try { gl.setPaintProperty(id, 'fill-opacity', archiVegFaded ? 0.1 : 1); } catch (_) {}
+    });
+    gl.isStyleLoaded() ? run() : gl.once('load', run);
+  }
+  function setArchiVegetationFaded(faded) { archiVegFaded = faded; applyArchiVegFade(); }
+
+  // « Plan archi » est le fond par défaut. Un fond raster n'est ajouté tout de
+  // suite que si l'utilisateur en a explicitement mémorisé un autre.
+  const wantArchi = !savedBase || savedBase === ARCHI_NAME;
+  let archiLayer = null;
+  if (typeof L.maplibreGL === 'function') {
+    buildArchiStyle().then(style => {
+      archiLayer = L.maplibreGL({ style, attribution: '© IGN — Plan IGN (tuiles vectorielles)' });
+      baseLayers[ARCHI_NAME] = archiLayer;
+      layersCtl.addBaseLayer(archiLayer, ARCHI_NAME);
+      if (wantArchi && !map.hasLayer(archiLayer)) {
+        Object.values(baseLayers).forEach(l => { if (l !== archiLayer && map.hasLayer(l)) map.removeLayer(l); });
+        archiLayer.addTo(map);
+      }
+      archiLayer.on('add', applyArchiVegFade);   // ré-applique l'atténuation quand on revient sur ce fond
+      applyArchiVegFade();
+      persistBase = true;
+    }).catch(err => {
+      console.warn('Fond « Plan archi » indisponible, repli sur Plan IGN :', err);
+      if (!Object.values(baseLayers).some(l => map.hasLayer(l))) baseLayers['Plan IGN'].addTo(map);
+      persistBase = true;
+    });
+  } else {
+    persistBase = true;
+  }
+
+  // Fond initial : le fond raster mémorisé, ou Plan IGN en attendant que « Plan
+  // archi » se charge (évite une carte vide si le style vectoriel tarde/échoue).
+  (wantArchi ? baseLayers['Plan IGN'] : (baseLayers[savedBase] || baseLayers['Plan IGN'])).addTo(map);
 
   // Layer pour les formes dessinées
   const drawnLayer = new L.FeatureGroup();
@@ -1138,7 +1364,34 @@
       updateAnchorCoords();
     });
     anchorMarker.on('dragend', updateAnchorCoords);
+    // Pendant le choix de l'altimétrie : cliquer l'ancrage = choisir « Point d'origine ».
+    anchorMarker.on('click', () => {
+      if (!zRefPickingMode) return;
+      deselectZRefMarker();
+      refreshZRefLabels();
+      document.getElementById('zref-mode-anchor').checked = true;
+      onZRefModeChange();
+    });
     updateAnchorCoords();
+  }
+
+  // Met en avant (ou non) le marqueur d'origine comme référence d'altimétrie.
+  function setAnchorRefSelected(on) {
+    const hint = document.getElementById('zref-anchor-hint');
+    if (hint) hint.style.display = on ? '' : 'none';
+    if (!anchorMarker) return;
+    const el = anchorMarker.getElement();
+    if (el) el.classList.toggle('ref-selected', on);
+    if (on) {
+      const z = document.getElementById('zref-mode-anchor').dataset.z;
+      anchorMarker.bindTooltip(
+        `<span class="swatch" style="background:#d92b2b">origine${z ? ' · ' + (+z).toFixed(2) + ' m' : ''}</span>`,
+        { permanent: true, direction: 'top', offset: [0, -12], className: 'zref-point-label' }
+      ).openTooltip();
+    } else if (anchorMarker.getTooltip()) {
+      anchorMarker.unbindTooltip();
+    }
+    refreshZRefLabels();   // bascule les points de contour en relatif / absolu
   }
 
   function updateAnchorCoords() {
@@ -1477,7 +1730,12 @@
       const statsPromise = fetch('/api/archicad/elevation_stats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parcelles_geojson: getSelectedParcelles().map(p => p.geometry) }),
+        body: JSON.stringify({
+          parcelles_geojson: getSelectedParcelles().map(p => p.geometry),
+          anchor_point: anchorMarker
+            ? { lon: anchorMarker.getLatLng().lng, lat: anchorMarker.getLatLng().lat }
+            : null,
+        }),
       }).then(r => r.json());
 
       const contourPromise = fetch('/api/archicad/contour_points', {
@@ -1490,6 +1748,7 @@
       if (stats.error) throw new Error(stats.error);
       openZRefModal(stats);
       if (!contour.error) showContourPoints(contour.points);
+      updateAnchorZRefEstimate();
       setStatus('Prêt.');
     } catch (e) {
       setStatus('Altimétrie : ' + e.message, 'error');
@@ -1511,11 +1770,20 @@
 
   let zrefMarkers = []; // [{marker, z, color}] — le jeu de points actuellement affiché
 
-  // Étiquette du point : NGF absolu par défaut ; si un point est sélectionné, les
-  // AUTRES points affichent leur écart relatif à celui-ci (+1.11, -0.45…) — le
-  // point sélectionné, lui, garde toujours son altitude NGF absolue.
+  // Altitude de référence courante : le point de contour sélectionné, sinon le
+  // point d'origine s'il est choisi comme référence, sinon aucune.
+  function currentZRefValue() {
+    if (selectedZRefMarker) return selectedZRefMarker._zrefZ;
+    const a = document.getElementById('zref-mode-anchor');
+    if (a.checked && a.dataset.z !== '' && a.dataset.z != null) return parseFloat(a.dataset.z);
+    return null;
+  }
+
+  // Étiquette du point : NGF absolu par défaut ; dès qu'une référence est choisie
+  // (point de contour OU point d'origine), les AUTRES points affichent leur écart
+  // relatif à celle-ci (+1.11, -0.45…). Le point sélectionné garde son NGF absolu.
   function refreshZRefLabels() {
-    const selectedZ = selectedZRefMarker ? selectedZRefMarker._zrefZ : null;
+    const selectedZ = currentZRefValue();
     zrefMarkers.forEach(({ marker, z, color }) => {
       const isSelected = marker === selectedZRefMarker;
       let label, cls = 'swatch';
@@ -1602,18 +1870,53 @@
     document.getElementById('zref-average').textContent = stats.average.toFixed(2) + ' m';
     document.getElementById('zref-max').textContent     = stats.max.toFixed(2) + ' m';
     document.getElementById('zref-manual-value').value  = stats.min.toFixed(2);
+
+    // « Point d'origine » : altitude RGE ALTI/LiDAR HD au point d'ancrage. Se
+    // choisit en cliquant le marqueur rouge sur la carte (le serveur recalcule
+    // de toute façon cette altitude à la génération).
+    document.querySelector('input[name="zref-mode"][value="min"]').checked = true;
+    const anchorInput = document.getElementById('zref-mode-anchor');
+    anchorInput.checked = false;
+    anchorInput.dataset.z = (typeof stats.anchor === 'number') ? stats.anchor : '';
+    document.getElementById('zref-anchor-value').textContent =
+      (typeof stats.anchor === 'number') ? stats.anchor.toFixed(2) + ' m' : '…';
+    setAnchorRefSelected(false);
+    onZRefModeChange();
+
     document.getElementById('zref-modal-backdrop').style.display = 'flex';
     setZRefPickingMode(true);
+  }
+
+  // Renseigne / corrige la valeur affichée pour « Point d'origine » à partir du
+  // point de contour le plus proche de l'ancrage, si le serveur n'a rien renvoyé.
+  function updateAnchorZRefEstimate() {
+    const el = document.getElementById('zref-anchor-value');
+    const anchorInput = document.getElementById('zref-mode-anchor');
+    if (anchorInput.dataset.z !== '' || !anchorMarker || !zrefMarkers.length) return;
+    const a = anchorMarker.getLatLng();
+    let best = null, bestD = Infinity;
+    zrefMarkers.forEach(({ marker, z }) => {
+      const d = map.distance(a, marker.getLatLng());
+      if (d < bestD) { bestD = d; best = z; }
+    });
+    if (best !== null) {
+      el.textContent = '≈ ' + best.toFixed(2) + ' m';
+      anchorInput.dataset.z = best;
+      if (anchorInput.checked) setAnchorRefSelected(true);   // rafraîchit l'étiquette
+    }
   }
 
   function closeZRefModal() {
     document.getElementById('zref-modal-backdrop').style.display = 'none';
     contourPointsLayer.clearLayers();
+    setAnchorRefSelected(false);
     setZRefPickingMode(false);
   }
 
   function onZRefModeChange() {
-    document.getElementById('zref-manual-value').disabled = !document.getElementById('zref-mode-manual').checked;
+    const mode = (document.querySelector('input[name="zref-mode"]:checked') || {}).value;
+    document.getElementById('zref-manual-value').disabled = mode !== 'manual';
+    setAnchorRefSelected(mode === 'anchor');
   }
 
   async function confirmZRefAndGenerate() {
@@ -1714,6 +2017,146 @@
         attribution: '© BRGM / Géorisques'
       });
       riskLayers[type].addTo(map);
+    }
+  }
+
+  // ── Rayon 500 m autour des gares / stations de métro / tramway ───────────
+  map.createPane('stationBufPane');
+  map.getPane('stationBufPane').style.zIndex = 385;   // sous les parcelles/dessins
+  const stationRenderer = L.svg({ pane: 'stationBufPane' });
+  const stationBufLayer = L.layerGroup([]);
+  let stationBufReqId = 0;
+
+  async function refreshStationBuffers() {
+    if (!document.getElementById('chk-stations-500').checked) return;
+    const reqId = ++stationBufReqId;
+    const b = map.getBounds();
+    // Marge > 500 m : une station hors cadre dont le rayon mord dans la fenêtre
+    // doit quand même être récupérée (sinon son cercle disparaît au zoom).
+    const dLat = 0.007, dLon = 0.011;
+    try {
+      const r = await fetch('/api/stations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bbox: [
+          b.getWest() - dLon, b.getSouth() - dLat,
+          b.getEast() + dLon, b.getNorth() + dLat,
+        ] }),
+      });
+      const d = await r.json();
+      if (reqId !== stationBufReqId) return;            // une requête plus récente a pris le relais
+      stationBufLayer.clearLayers();
+      if (d.too_wide) { setStatus('Rayon gares : zoomez un peu pour afficher les stations.', ''); return; }
+      if (d.error) { setStatus('Rayon gares : ' + d.error, 'error'); return; }
+
+      // Zone de desserte : UN seul polygone (union serveur des disques de 500 m)
+      // → remplissage plein à 20 %, uniforme même là où des cercles se chevauchent.
+      if (d.buffer_geojson) {
+        L.geoJSON(d.buffer_geojson, {
+          renderer: stationRenderer,
+          style: { color: '#c0392b', weight: 1, opacity: 0.6, fillColor: '#c0392b', fillOpacity: 0.2 },
+        }).addTo(stationBufLayer);
+      }
+      // Point + nom de chaque station.
+      (d.stations || []).forEach(s => {
+        L.circleMarker([s.lat, s.lon], {
+          radius: 3, renderer: stationRenderer, color: '#c0392b', weight: 1,
+          fillColor: '#c0392b', fillOpacity: 1,
+        }).bindTooltip(
+          `${s.name || 'Station'}${s.detail ? ' — ' + s.detail : ''} · rayon ${d.radius_m || 500} m`,
+          { sticky: true }
+        ).addTo(stationBufLayer);
+      });
+    } catch (e) {
+      if (reqId === stationBufReqId) setStatus('Rayon gares : ' + e.message, 'error');
+    }
+  }
+
+  const refreshStationBuffersDebounced = (() => {
+    let t; return () => { clearTimeout(t); t = setTimeout(refreshStationBuffers, 400); };
+  })();
+
+  function toggleStationBuffers(on) {
+    if (on) {
+      stationBufLayer.addTo(map);
+      map.on('moveend', refreshStationBuffersDebounced);
+      refreshStationBuffers();
+    } else {
+      map.off('moveend', refreshStationBuffersDebounced);
+      stationBufLayer.clearLayers();
+      map.removeLayer(stationBufLayer);
+    }
+  }
+
+  // ── Monuments historiques : emprises + périmètre d'abords (API Carto GPU) ──
+  map.createPane('monumentPane');
+  map.getPane('monumentPane').style.zIndex = 384;
+  const monumentRenderer = L.svg({ pane: 'monumentPane' });
+  const monumentLayer = L.layerGroup([]);
+  const MH_COLOR = '#7d3c98';        // violet « patrimoine »
+  let monumentReqId = 0;
+
+  async function refreshMonuments() {
+    if (!document.getElementById('chk-monuments').checked) return;
+    const reqId = ++monumentReqId;
+    const b = map.getBounds();
+    const dLat = 0.007, dLon = 0.011;   // marge : voir les abords qui mordent dans la vue
+    try {
+      const r = await fetch('/api/monuments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bbox: [
+          b.getWest() - dLon, b.getSouth() - dLat,
+          b.getEast() + dLon, b.getNorth() + dLat,
+        ] }),
+      });
+      const d = await r.json();
+      if (reqId !== monumentReqId) return;
+      monumentLayer.clearLayers();
+      if (d.too_wide) { setStatus('Monuments historiques : zoomez pour afficher.', ''); return; }
+      if (d.error) { setStatus('Monuments historiques : ' + d.error, 'error'); return; }
+
+      // Périmètre d'abords (un seul polygone, union serveur) — aplat léger.
+      if (d.abords_geojson) {
+        L.geoJSON(d.abords_geojson, {
+          renderer: monumentRenderer,
+          style: { color: MH_COLOR, weight: 1, opacity: 0.45, fillColor: MH_COLOR, fillOpacity: 0.14 },
+        }).bindTooltip("Périmètre d'abords — avis ABF (co-visibilité à apprécier par l'ABF)", { sticky: true })
+          .addTo(monumentLayer);
+      }
+      // Emprises des monuments — plus marquées, nom au survol.
+      (d.monuments || []).forEach(m => {
+        if (m.geometry) {
+          L.geoJSON(m.geometry, {
+            renderer: monumentRenderer,
+            style: { color: '#5b2d76', weight: 1.5, opacity: 0.9, fillColor: MH_COLOR, fillOpacity: 0.45 },
+          }).bindTooltip(m.name, { sticky: true }).addTo(monumentLayer);
+        } else if (m.lat != null) {
+          L.circleMarker([m.lat, m.lon], {
+            radius: 4, renderer: monumentRenderer, color: '#5b2d76', weight: 1.5,
+            fillColor: MH_COLOR, fillOpacity: 0.9,
+          }).bindTooltip(m.name, { sticky: true }).addTo(monumentLayer);
+        }
+      });
+      if (d.truncated) setStatus('Monuments historiques : beaucoup de monuments ici — liste tronquée, zoomez pour tout voir.', '');
+    } catch (e) {
+      if (reqId === monumentReqId) setStatus('Monuments historiques : ' + e.message, 'error');
+    }
+  }
+
+  const refreshMonumentsDebounced = (() => {
+    let t; return () => { clearTimeout(t); t = setTimeout(refreshMonuments, 400); };
+  })();
+
+  function toggleMonuments(on) {
+    if (on) {
+      monumentLayer.addTo(map);
+      map.on('moveend', refreshMonumentsDebounced);
+      refreshMonuments();
+    } else {
+      map.off('moveend', refreshMonumentsDebounced);
+      monumentLayer.clearLayers();
+      map.removeLayer(monumentLayer);
     }
   }
 
@@ -1885,11 +2328,13 @@
     map.removeControl(drawControl);
     activeGabaritScale = null;
     updateGabarit();
+    setArchiVegetationFaded(true);   // sélection de parcelles : végétation en retrait
   }
   function backToSelection() {
     document.getElementById('phase-generation').style.display = 'none';
     document.getElementById('phase-selection').style.display = 'block';
     map.addControl(drawControl);
+    setArchiVegetationFaded(false);
   }
 
   // ── Utilitaires ──────────────────────────────────────────────────────────

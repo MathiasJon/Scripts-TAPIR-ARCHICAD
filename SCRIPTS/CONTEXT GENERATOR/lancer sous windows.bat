@@ -49,11 +49,33 @@ if errorlevel 1 (
     echo.
 )
 
-REM — Créer l'environnement virtuel si besoin —
-if not exist ".venv\Scripts\pip.exe" (
+REM — Environnement Python —
+REM   L'environnement virtuel n'est JAMAIS place dans le dossier de l'outil :
+REM   celui-ci est souvent sur un disque reseau partage, or un venv contient
+REM   des binaires et des chemins propres a une machine (le partager entre
+REM   postes le casse) et l'ecriture de milliers de fichiers sur le reseau est
+REM   tres lente. On le cree en local dans %LOCALAPPDATA% (non synchronise, a la
+REM   difference du dossier Documents avec OneDrive). Un venv distinct par
+REM   emplacement d'installation (empreinte du chemin) evite les collisions.
+for /f %%i in ('%PYTHON% -c "import hashlib,os;print(hashlib.sha1(os.getcwd().encode()).hexdigest()[:12])"') do set VENV_ID=%%i
+set VENV=%LOCALAPPDATA%\CadastreTool\venv-%VENV_ID%
+if not exist "%LOCALAPPDATA%\CadastreTool" md "%LOCALAPPDATA%\CadastreTool"
+
+set VENV_OK=1
+if not exist "%VENV%\Scripts\python.exe" set VENV_OK=0
+if "%VENV_OK%"=="1" (
+    "%VENV%\Scripts\python.exe" -c "import sys" >nul 2>&1
+    if errorlevel 1 set VENV_OK=0
+)
+if "%VENV_OK%"=="0" (
     echo.
-    echo Premiere utilisation - creation de l'environnement virtuel...
-    %PYTHON% -m venv .venv
+    if exist "%VENV%" (
+        echo Environnement inutilisable - recreation...
+        rmdir /s /q "%VENV%"
+    ) else (
+        echo Premiere utilisation - creation de l'environnement Python (local a ce poste)...
+    )
+    %PYTHON% -m venv "%VENV%"
     if errorlevel 1 (
         echo ERREUR : Impossible de creer l'environnement virtuel.
         pause
@@ -65,12 +87,12 @@ if not exist ".venv\Scripts\pip.exe" (
 REM — Installer/mettre à jour les dépendances —
 echo.
 echo Installation des dependances (patientez)...
-.venv\Scripts\pip install -r requirements.txt --quiet
+"%VENV%\Scripts\pip" install -r requirements.txt --quiet
 if errorlevel 1 (
     echo.
     echo ERREUR lors de l'installation. Details :
     echo.
-    .venv\Scripts\pip install -r requirements.txt
+    "%VENV%\Scripts\pip" install -r requirements.txt
     echo.
     pause
     exit /b 1
@@ -87,7 +109,7 @@ echo.
 echo Demarrage du serveur...
 set LOG=%~dp0cadastre-tool.log
 if exist "%LOG%" del "%LOG%"
-start "" /b .venv\Scripts\python server.py > "%LOG%" 2>&1
+start "" /b "%VENV%\Scripts\python" server.py > "%LOG%" 2>&1
 
 REM — Attendre que le serveur soit prêt (max 30 s) —
 set RETRY=0
