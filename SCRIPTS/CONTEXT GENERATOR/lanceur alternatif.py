@@ -9,7 +9,8 @@ sur un .command téléchargé, .bat en quarantaine, etc.).
 Utilisation :
   - Double-clic (ouvre « Python Launcher »), OU
   - Ouvrir ce fichier dans IDLE puis menu  Run > Run Module  (F5), OU
-  - Terminal / invite de commandes :   python3 Lancer.py    (Windows : py Lancer.py)
+  - Terminal / invite de commandes, depuis ce dossier :
+        python3 "lanceur alternatif.py"      (Windows :  py "lanceur alternatif.py")
 
 Un fichier .py exécuté depuis IDLE ou le terminal ne déclenche PAS Gatekeeper.
 Ce script n'utilise que la bibliothèque standard : rien à installer pour le lancer.
@@ -44,7 +45,7 @@ def fail(msg):
 
 def main():
     if not (APP / "server.py").exists():
-        fail("Dossier « app » introuvable à côté de Lancer.py.\n"
+        fail("Dossier « app » introuvable à côté de « lanceur alternatif.py ».\n"
              "Décompressez l'archive en entier avant de lancer.")
 
     if sys.version_info < (3, 10):

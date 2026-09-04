@@ -31,7 +31,7 @@ jobs:
           cp "$SRC/app/frontend/index.html" "$PKG/app/frontend/"
           cp "$SRC/lancer sous mac os.command" "$PKG/"
           cp "$SRC/lancer sous windows.bat"    "$PKG/"
-          cp "$SRC/Lancer.py"                  "$PKG/"
+          cp "$SRC/lanceur alternatif.py"      "$PKG/"
           chmod +x "$PKG/lancer sous mac os.command"
 
           # Le runner est Linux : le fichier source est en LF. Un .bat Windows a
@@ -60,9 +60,10 @@ jobs:
 
           SI RIEN NE MARCHE (fichier en quarantaine, blocage antivirus…)
           -------------------------------------------------------------
-          Utilisez « Lancer.py » (même résultat, tous systèmes) :
+          Utilisez « lanceur alternatif.py » (même résultat, tous systèmes) :
           - clic-droit → Ouvrir avec → IDLE, puis menu  Run > Run Module  (F5)
-          - OU dans un terminal :   python3 Lancer.py    (Windows :  py Lancer.py)
+          - OU dans un terminal, depuis ce dossier :
+              python3 "lanceur alternatif.py"   (Windows :  py "lanceur alternatif.py")
           Un .py lancé depuis IDLE ou le terminal ne déclenche pas Gatekeeper.
 
           Autre option : récupérer le dossier via le disque partagé ou « git clone »
