@@ -31,6 +31,7 @@ jobs:
           cp "$SRC/app/frontend/index.html" "$PKG/app/frontend/"
           cp "$SRC/lancer sous mac os.command" "$PKG/"
           cp "$SRC/lancer sous windows.bat"    "$PKG/"
+          cp "$SRC/Lancer.py"                  "$PKG/"
           chmod +x "$PKG/lancer sous mac os.command"
 
           # Le runner est Linux : le fichier source est en LF. Un .bat Windows a
@@ -42,28 +43,36 @@ jobs:
           CADASTRE TOOL — Installation
           ==============================
 
+          À la racine : les lanceurs. Tout le reste est dans le dossier « app ».
+          Au 1er lancement, l'outil installe ses dépendances Python (1-2 min).
+          L'interface s'ouvre ensuite sur http://localhost:5057
+
           MACOS
           ------
-          1. Double-clic sur « lancer sous mac os.command »
-             Si macOS bloque le fichier : clic-droit → Ouvrir → Ouvrir quand même
-             (protection Gatekeeper normale pour les fichiers téléchargés)
-
-          2. L'outil installe automatiquement ses dépendances Python
-             (première ouverture : 1-2 minutes selon la connexion)
-
-          3. L'interface s'ouvre dans le navigateur sur http://localhost:5057
+          - Double-clic sur « lancer sous mac os.command »
+          - Si macOS bloque : clic-droit → Ouvrir → Ouvrir quand même.
+            Sur macOS 15+, si ça ne suffit pas :
+            Réglages Système → Confidentialité et sécurité → « Ouvrir quand même ».
 
           WINDOWS
           --------
-          1. Double-clic sur « lancer sous windows.bat »
-          2. L'outil installe automatiquement ses dépendances Python
-          3. L'interface s'ouvre dans le navigateur sur http://localhost:5057
+          - Double-clic sur « lancer sous windows.bat »
+
+          SI RIEN NE MARCHE (fichier en quarantaine, blocage antivirus…)
+          -------------------------------------------------------------
+          Utilisez « Lancer.py » (même résultat, tous systèmes) :
+          - clic-droit → Ouvrir avec → IDLE, puis menu  Run > Run Module  (F5)
+          - OU dans un terminal :   python3 Lancer.py    (Windows :  py Lancer.py)
+          Un .py lancé depuis IDLE ou le terminal ne déclenche pas Gatekeeper.
+
+          Autre option : récupérer le dossier via le disque partagé ou « git clone »
+          (les fichiers ne sont alors jamais mis en quarantaine).
 
           PRÉ-REQUIS
           -----------
           Python 3.10 ou supérieur — https://www.python.org
-          Sur macOS : disponible via https://www.python.org ou `brew install python3`
-          Sur Windows : cocher "Add Python to PATH" lors de l'installation
+          macOS : via https://www.python.org (fournit aussi IDLE) ou `brew install python3`
+          Windows : cocher "Add Python to PATH" lors de l'installation
           EOF
 
           # Nom de fichier fixe (pas versionné) : permet un lien stable
