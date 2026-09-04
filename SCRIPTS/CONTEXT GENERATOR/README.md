@@ -10,8 +10,7 @@ Vous dessinez une emprise sur une carte, l'outil récupère le cadastre (PCI), l
 
 - un **maillage de terrain** qui suit le relief réel ;
 - un **maillage par parcelle sélectionnée**, encastré dans le terrain ;
-- un **maillage par bâtiment cadastral** (hauteur BD TOPO, 3 m par défaut) ;
-- le **géoréférencement** du projet (Point de Repère calé sur les coordonnées Lambert‑93 réelles).
+- un **maillage par bâtiment cadastral** (hauteur BD TOPO, 3 m par défaut).
 
 Le tout en **coordonnées locales**, autour d'un point d'origine que vous choisissez.
 
@@ -154,7 +153,7 @@ Une **unique** boîte de dialogue Archicad demande confirmation **avant toute cr
 
 ## Ce qui est créé dans Archicad
 
-- **Géoréférencement** : le Point de Repère est positionné sur les coordonnées **Lambert‑93 réelles** du point d'ancrage. Tous les éléments générés sont en coordonnées locales relatives à ce point.
+- Tous les éléments sont générés en **coordonnées locales**, relatives au point d'ancrage (origine 0,0) et à l'altimétrie de référence choisie.
 - **Maillage de terrain** : grille d'altitude RGE ALTI / LiDAR HD sur l'emprise, corps solide avec jupe. Un anti‑pics filtre la végétation résiduelle du LiDAR.
 - **Maillage par parcelle sélectionnée** : encastré exactement dans le terrain (trou + comblement au même contour, raccord net).
 - **Maillage par bâtiment cadastral** : emprise PCI, hauteur issue de la BD TOPO (**3 m par défaut** si aucune correspondance).
