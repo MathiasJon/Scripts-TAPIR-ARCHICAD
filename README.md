@@ -14,7 +14,7 @@ Scripts d'automatisation Archicad (add-on [Tapir](https://github.com/ENZYME-APD/
 
 > ⚠️ Données françaises uniquement (IGN, BD TOPO, RGE ALTI, cadastre) — adaptable à d'autres pays en remplaçant les sources.
 
-### [Context Generator](SCRIPTS/CONTEXT%20GENERATOR) — [📦 Télécharger le ZIP](../../releases/latest/download/cadastre-tool.zip)
+### [Context Generator](SCRIPTS/CONTEXT%20GENERATOR) — [📦 Télécharger le ZIP](../../releases/latest/download/cadastre-tool.zip) · [📖 Guide](SCRIPTS/CONTEXT%20GENERATOR/README.md)
 
 Sélectionne un périmètre cadastral, télécharge les DXF PCI, et génère terrain + parcelles + bâtiments directement dans Archicad via Tapir.
 
