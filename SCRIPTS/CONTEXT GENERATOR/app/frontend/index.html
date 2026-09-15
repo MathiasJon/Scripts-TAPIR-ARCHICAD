@@ -1109,7 +1109,20 @@
     if (!q) return;
     setStatus('Recherche…', 'loading');
     try {
-      const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=6`);
+      const url = `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=6`;
+      let r, lastErr;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          r = await fetch(url);
+          if (r.status >= 500) { lastErr = `${r.status} ${r.statusText}`; r = null; }
+          else break;
+        } catch (e) {
+          lastErr = e.message;
+          r = null;
+        }
+        if (attempt < 2) await new Promise(res => setTimeout(res, 800 * (attempt + 1)));
+      }
+      if (!r) throw new Error(lastErr || 'service indisponible');
       const d = await r.json();
       const box = document.getElementById('search-results');
       box.innerHTML = '';
@@ -1134,7 +1147,7 @@
       box.style.display = 'block';
       setStatus('Prêt.');
     } catch (e) {
-      setStatus('Erreur de géocodage.', 'error');
+      setStatus('Erreur de géocodage : ' + e.message, 'error');
     }
   }
 

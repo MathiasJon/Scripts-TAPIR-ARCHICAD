@@ -108,25 +108,39 @@ def main():
         fail("Les bibliothèques Python (flask, ezdxf, requests, pyproj, shapely) "
              "n'ont pas pu être installées ou chargées :\n\n" + log[-1500:])
 
+    import urllib.request
+    url = f"http://localhost:{PORT}/"
+
+    def server_already_running():
+        try:
+            urllib.request.urlopen(url, timeout=1).close()
+            return True
+        except Exception:
+            return False
+
+    # ── Un serveur tourne déjà (ex. lancement précédent resté orphelin après
+    # que le processus parent a été tué par l'environnement appelant, comme
+    # l'interface Tapir dans Archicad) : on le réutilise plutôt que d'échouer
+    # sur « port déjà utilisé ». ─────────────────────────────────────────────
+    if server_already_running():
+        print(f"Un serveur tourne déjà sur {url} — réouverture du navigateur.")
+        webbrowser.open(url)
+        return
+
     # ── Démarrer le serveur ────────────────────────────────────────────────
     print("Démarrage du serveur…")
     with open(LOG, "w", encoding="utf-8", errors="replace") as logf:
         proc = subprocess.Popen([str(venv_py), "server.py"], cwd=str(APP),
                                 stdout=logf, stderr=subprocess.STDOUT)
 
-    import urllib.request
-    url = f"http://localhost:{PORT}/"
     ready = False
     for _ in range(60):
         time.sleep(0.5)
         if proc.poll() is not None:
             break
-        try:
-            urllib.request.urlopen(url, timeout=1).close()
+        if server_already_running():
             ready = True
             break
-        except Exception:
-            pass
 
     if not ready:
         if proc.poll() is None:

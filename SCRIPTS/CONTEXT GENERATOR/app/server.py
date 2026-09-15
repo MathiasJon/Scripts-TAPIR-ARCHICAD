@@ -71,6 +71,21 @@ class _SkipBuildingsSentinel(Exception):
 
 app = Flask(__name__, static_folder='frontend')
 
+
+@app.errorhandler(Exception)
+def _handle_uncaught(e):
+    """Filet de sécurité pour /api/* : sans ça, une exception non prévue (ex. un
+    aléa Archicad pendant une génération) fait renvoyer par Flask sa page d'erreur
+    HTML par défaut, que le frontend tente de parser en JSON — provoquant un
+    "JSON.parse: unexpected character" au lieu du vrai message d'erreur."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    if request.path.startswith('/api/'):
+        return jsonify({'error': str(e) or type(e).__name__}), 500
+    raise e
+
+
 # Stockage temporaire en mémoire : token → (bytes, filename, mimetype)
 _pending: dict = {}
 
@@ -88,24 +103,45 @@ TAPIR_HOST = 'http://127.0.0.1'
 TAPIR_PORTS = [19723, 19724, 19725, 19726]
 _tapir_port_cache = None
 
-def _archicad_run_command(command, parameters=None, timeout=30):
-    """Appelle une commande native de l'API JSON Archicad (ex: API.GetProductInfo)."""
+def _archicad_run_command(command, parameters=None, timeout=60):
+    """Appelle une commande native de l'API JSON Archicad (ex: API.GetProductInfo).
+
+    Un clic ou un dialogue dans Archicad pendant une génération occupe son thread
+    principal quelques secondes : la commande reste en file d'attente côté Archicad
+    (pas perdue) mais notre requête HTTP peut timeouter avant sa réponse. On ne
+    réessaie PAS dans ce cas (la commande a pu être traitée entre-temps — la
+    réessayer risquerait de dupliquer un élément déjà créé, ex. CreateMeshes) ;
+    seule une vraie erreur de connexion (requête jamais partie) est réessayée.
+    """
     global _tapir_port_cache
     ports_to_try = [_tapir_port_cache] if _tapir_port_cache else TAPIR_PORTS
     last_err = None
+    resp = None
     for port in ports_to_try:
-        try:
-            resp = requests.post(
-                f'{TAPIR_HOST}:{port}',
-                json={'command': command, 'parameters': parameters or {}},
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            _tapir_port_cache = port
+        for attempt in range(2):
+            try:
+                resp = requests.post(
+                    f'{TAPIR_HOST}:{port}',
+                    json={'command': command, 'parameters': parameters or {}},
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                _tapir_port_cache = port
+                break
+            except requests.Timeout as e:
+                last_err = e
+                resp = None
+                break  # requête possiblement traitée côté Archicad : ne pas réémettre
+            except requests.ConnectionError as e:
+                last_err = e
+                resp = None
+                time.sleep(1.0 * (attempt + 1))  # rien envoyé : sans risque de réessayer
+            except requests.RequestException as e:
+                last_err = e
+                resp = None
+                break
+        if resp is not None:
             break
-        except requests.RequestException as e:
-            last_err = e
-            resp = None
     if resp is None:
         raise RuntimeError(f"Archicad injoignable sur les ports {TAPIR_PORTS} : {last_err}")
     data = resp.json()
@@ -155,41 +191,55 @@ def _point_wgs84_to_l93(lon, lat):
     return _wgs84_to_l93.transform(lon, lat)
 
 
-def _apicarto_get(path, params, timeout=15, retries=3):
-    """GET sur apicarto.ign.fr avec réessais.
+def _ign_request(method, url, *, params=None, json_body=None, timeout=15, retries=4, service_label='service IGN'):
+    """Requête vers un service IGN (data.geopf.fr, apicarto.ign.fr, api-adresse)
+    avec réessais — ces services renvoient fréquemment des 5xx transitoires
+    (service momentanément surchargé/throttlé) sur des requêtes pourtant valides.
 
-    L'API Carto de l'IGN renvoie fréquemment des 500/502/504 transitoires (service
-    momentanément surchargé) sur des requêtes pourtant valides. On réessaie
-    quelques fois avec une petite pause avant d'abandonner.
+    Respecte l'en-tête Retry-After si le serveur le fournit (indique une vraie
+    limitation de débit plutôt qu'une simple surcharge) au lieu d'un backoff fixe
+    trop court pour laisser passer une éventuelle fenêtre de quota.
     """
-    url = f'https://apicarto.ign.fr{path}'
     last_err = None
     for attempt in range(retries):
         try:
-            resp = requests.get(url, params=params, timeout=timeout)
-            if resp.status_code >= 500:
+            resp = requests.request(method, url, params=params, json=json_body, timeout=timeout)
+            if resp.status_code >= 500 or resp.status_code == 429:
                 last_err = requests.HTTPError(f'{resp.status_code} Server Error', response=resp)
-                time.sleep(1.5 * (attempt + 1))
+                if attempt < retries - 1:
+                    retry_after = resp.headers.get('Retry-After')
+                    try:
+                        wait = min(float(retry_after), 30) if retry_after else 2.0 * (attempt + 1)
+                    except ValueError:
+                        wait = 2.0 * (attempt + 1)
+                    time.sleep(wait)
                 continue
             resp.raise_for_status()
             return resp
         except (requests.ConnectionError, requests.Timeout) as e:
             last_err = e
-            time.sleep(1.5 * (attempt + 1))
+            if attempt < retries - 1:
+                time.sleep(2.0 * (attempt + 1))
     raise requests.RequestException(
-        f"service IGN (API Carto cadastre) momentanément indisponible — réessayez "
-        f"dans un instant. [{last_err}]"
+        f"{service_label} momentanément indisponible — réessayez dans un instant. [{last_err}]"
+    )
+
+
+def _apicarto_get(path, params, timeout=15, retries=4):
+    """GET sur apicarto.ign.fr avec réessais (voir _ign_request)."""
+    return _ign_request(
+        'GET', f'https://apicarto.ign.fr{path}', params=params, timeout=timeout, retries=retries,
+        service_label='service IGN (API Carto cadastre)',
     )
 
 
 def _point_elevation(lon, lat):
     """Altitude RGE ALTI/LiDAR HD (m) d'un point WGS84, ou None si indisponible."""
-    r = requests.get(
-        'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json',
+    r = _ign_request(
+        'GET', 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json',
         params={'lon': lon, 'lat': lat, 'resource': 'ign_rge_alti_wld'},
-        timeout=15,
+        timeout=15, service_label="service d'altimétrie IGN",
     )
-    r.raise_for_status()
     elevations = r.json().get('elevations', [])
     return elevations[0].get('z') if elevations else None
 
@@ -202,12 +252,11 @@ def _batch_point_elevations(lonlat_points, batch_size=4000):
         chunk = lonlat_points[i:i + batch_size]
         lon_str = '|'.join(f'{lon:.7f}' for lon, lat in chunk)
         lat_str = '|'.join(f'{lat:.7f}' for lon, lat in chunk)
-        r = requests.post(
-            'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json',
-            json={'lon': lon_str, 'lat': lat_str, 'resource': 'ign_rge_alti_wld', 'delimiter': '|'},
-            timeout=60,
+        r = _ign_request(
+            'POST', 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json',
+            json_body={'lon': lon_str, 'lat': lat_str, 'resource': 'ign_rge_alti_wld', 'delimiter': '|'},
+            timeout=60, service_label="service d'altimétrie IGN",
         )
-        r.raise_for_status()
         elevations.extend(item.get('z') for item in r.json().get('elevations', []))
     return elevations
 
@@ -252,12 +301,11 @@ def _fetch_elevation_grid_l93(min_x, min_y, max_x, max_y, spacing_m=1.0):
         lon_str = '|'.join(f'{lon:.7f}' for lon, lat in chunk)
         lat_str = '|'.join(f'{lat:.7f}' for lon, lat in chunk)
         # POST (pas GET) : la liste de points en GET dépasse vite la longueur d'URL max
-        r = requests.post(
-            'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json',
-            json={'lon': lon_str, 'lat': lat_str, 'resource': 'ign_rge_alti_wld', 'delimiter': '|'},
-            timeout=60,
+        r = _ign_request(
+            'POST', 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json',
+            json_body={'lon': lon_str, 'lat': lat_str, 'resource': 'ign_rge_alti_wld', 'delimiter': '|'},
+            timeout=60, service_label="service d'altimétrie IGN",
         )
-        r.raise_for_status()
         for j, item in enumerate(r.json().get('elevations', [])):
             elevations[i + j] = item.get('z')
 
@@ -373,6 +421,14 @@ def _fill_missing_grid_z(rows):
 # les parcelles cadastrales privées, et le trottoir est la différence des deux.
 # C'est une reconstruction indicative (pas un relevé de bordure réel).
 
+def _wfs_get(params, timeout=30, retries=4):
+    """GET sur le WFS data.geopf.fr (IGN) avec réessais (voir _ign_request)."""
+    return _ign_request(
+        'GET', 'https://data.geopf.fr/wfs/ows', params=params, timeout=timeout, retries=retries,
+        service_label='service IGN (WFS BD TOPO)',
+    )
+
+
 def _geojson_polygon_to_wkt_latlon(geom_dict):
     """Convertit un Polygon GeoJSON (lon,lat) en WKT avec l'ordre lat/lon attendu
     par le CQL_FILTER de ce service WFS (axe EPSG:4326 strict lat,lon)."""
@@ -392,8 +448,7 @@ def _fetch_routes_bdtopo(perimeter_geojson):
         'CQL_FILTER': f'INTERSECTS(geometrie,{wkt})',
         'COUNT': 2000,
     }
-    resp = requests.get('https://data.geopf.fr/wfs/ows', params=params, timeout=30)
-    resp.raise_for_status()
+    resp = _wfs_get(params, timeout=30)
     routes = []
     for f in resp.json().get('features', []):
         geom = f.get('geometry')
@@ -425,8 +480,7 @@ def _fetch_batiments_bdtopo(perimeter_geojson):
         'CQL_FILTER': f'INTERSECTS(geometrie,{wkt})',
         'COUNT': 2000,
     }
-    resp = requests.get('https://data.geopf.fr/wfs/ows', params=params, timeout=30)
-    resp.raise_for_status()
+    resp = _wfs_get(params, timeout=30)
     batiments = []
     for f in resp.json().get('features', []):
         geom = f.get('geometry')
@@ -885,8 +939,7 @@ def get_stations():
                        f'AND nature IN ({natures})'),
     }
     try:
-        resp = requests.get('https://data.geopf.fr/wfs/ows', params=params, timeout=20)
-        resp.raise_for_status()
+        resp = _wfs_get(params, timeout=20)
         feats = resp.json().get('features', [])
     except (requests.RequestException, ValueError) as e:
         return jsonify({'error': f'Service IGN indisponible : {e}'}), 502
@@ -1157,8 +1210,11 @@ def _housenumber_sort_key(num):
 
 
 def _reverse_geocode(lon, lat):
-    r = requests.get('https://api-adresse.data.gouv.fr/reverse/', params={'lon': lon, 'lat': lat}, timeout=15)
-    r.raise_for_status()
+    """Géocodage inverse (API Adresse data.gouv.fr) avec réessais (voir _ign_request)."""
+    r = _ign_request(
+        'GET', 'https://api-adresse.data.gouv.fr/reverse/', params={'lon': lon, 'lat': lat},
+        timeout=15, service_label='API Adresse',
+    )
     features = r.json().get('features', [])
     return features[0]['properties'] if features else None
 
@@ -1330,7 +1386,10 @@ def archicad_contour_points():
             unique_l93.append((x, y))
 
     lonlat = [_l93_to_wgs84.transform(x, y) for x, y in unique_l93]
-    elevations = _batch_point_elevations(lonlat)
+    try:
+        elevations = _batch_point_elevations(lonlat)
+    except requests.RequestException as e:
+        return jsonify({'error': f'Altimétrie : {e}'}), 502
 
     points = [
         {'lon': lon, 'lat': lat, 'z': z}
@@ -1368,7 +1427,10 @@ def archicad_elevation_stats():
         return jsonify({'error': "Altimétrie indisponible sur ce périmètre."}), 404
 
     min_x, min_y, max_x, max_y = mask_union.bounds
-    rows, spacing = _fetch_elevation_grid_l93(min_x, min_y, max_x, max_y, spacing_m=1.0)
+    try:
+        rows, spacing = _fetch_elevation_grid_l93(min_x, min_y, max_x, max_y, spacing_m=1.0)
+    except requests.RequestException as e:
+        return jsonify({'error': f'Altimétrie : {e}'}), 502
     valid_z = [z for row in rows for x, y, z in row if z is not None and mask_union.covers(_ShapelyPoint(x, y))]
 
     if not valid_z:
@@ -1385,7 +1447,10 @@ def archicad_elevation_stats():
     # de proposer « le point d'origine » comme référence Z=0 dans le navigateur.
     anchor_point = data.get('anchor_point')
     if anchor_point:
-        anchor_z = _point_elevation(anchor_point['lon'], anchor_point['lat'])
+        try:
+            anchor_z = _point_elevation(anchor_point['lon'], anchor_point['lat'])
+        except requests.RequestException:
+            anchor_z = None
         if anchor_z is not None:
             result['anchor'] = anchor_z
 
@@ -1431,9 +1496,12 @@ def archicad_generate():
 
     anchor_lon, anchor_lat = anchor_point['lon'], anchor_point['lat']
     anchor_x, anchor_y = _wgs84_to_l93.transform(anchor_lon, anchor_lat)
-    anchor_z = _point_elevation(anchor_lon, anchor_lat) or 0.0
-
     errors = []
+    try:
+        anchor_z = _point_elevation(anchor_lon, anchor_lat) or 0.0
+    except requests.RequestException as e:
+        anchor_z = 0.0
+        errors.append(f"Altitude du point d'ancrage : erreur — {e}")
 
     # Un projet doit être ouvert dans Archicad, sinon CHAQUE étape échoue avec un
     # « Invalid program status (no open project) » peu parlant. On coupe court —
@@ -1465,6 +1533,50 @@ def archicad_generate():
                             'errors': [], 'message': 'Génération annulée dans Archicad.'})
     except Exception:
         pass  # ShowAlert indisponible (Tapir ancien) : on génère sans confirmation
+
+    # ── Déverrouiller/rendre visibles TOUS les calques concernés, avant création ──
+    # Le maillage de terrain atterrit sur le calque par défaut courant de l'outil
+    # Maillage dans Archicad (aucun moyen de le lire par avance, ni de le forcer
+    # depuis CreateMeshes qui n'a pas de paramètre 'layer'). On ne peut donc pas
+    # cibler un calque précis par avance — mais on n'a pas besoin de le faire :
+    # cette liste vient de API.GetAttributesByType + API.GetLayerAttributes, où
+    # 'name' et 'isLocked'/'isHidden' proviennent du MÊME élément de réponse (donc
+    # toujours correctement appariés), on peut donc en toute sécurité déverrouiller/
+    # rendre visible chaque calque par son propre nom, sans avoir à identifier
+    # lequel est le bon.
+    # (Piège évité : le 'layerIndex' interne d'Archicad, renvoyé par
+    # GetDetailsOfElements après création, n'est PAS une position dans cette
+    # liste — c'est un numéro qui peut avoir des trous (calques supprimés) ; il
+    # ne doit jamais servir d'index dans une liste obtenue par ailleurs.)
+    try:
+        attrs_resp = _archicad_run_command('API.GetAttributesByType', {'attributeType': 'Layer'})
+        layer_ids = [{'attributeId': a['attributeId']} for a in attrs_resp['attributeIds']]
+        layer_attrs = _archicad_run_command('API.GetLayerAttributes', {'attributeIds': layer_ids})
+        to_fix = []
+        n_locked = n_hidden = 0
+        for a in layer_attrs['attributes']:
+            layer = a['layerAttribute']
+            was_locked = bool(layer.get('isLocked'))
+            was_hidden = bool(layer.get('isHidden'))
+            if was_locked or was_hidden:
+                item = {'name': layer.get('name', '')}
+                if was_locked:
+                    item['isLocked'] = False
+                    n_locked += 1
+                if was_hidden:
+                    item['isHidden'] = False
+                    n_hidden += 1
+                to_fix.append(item)
+        if to_fix:
+            _tapir_run_command('CreateLayers', {'layerDataArray': to_fix, 'overwriteExisting': True})
+            parts = []
+            if n_locked:
+                parts.append(f'{n_locked} déverrouillé(s)')
+            if n_hidden:
+                parts.append(f'{n_hidden} rendu(s) visible(s)')
+            errors.append(f"Calques : {' et '.join(parts)} automatiquement.")
+    except Exception as e:
+        errors.append(f'Déverrouillage des calques : erreur — {e}')
 
     # Valeurs de repli au niveau de la fonction : si le maillage de terrain échoue,
     # les étapes suivantes (bâtiments) référencent quand même `rows` / `to_local` /
@@ -1585,40 +1697,6 @@ def archicad_generate():
         })
         mesh_element_id = create_result['elements'][0]['elementId']
 
-        # ── Calque de destination verrouillé ? ──────────────────────────────
-        # Le maillage est créé sur le calque actif d'Archicad, quel qu'il soit —
-        # s'il est verrouillé, les modifications suivantes (réduction du contour,
-        # nettoyage du quadrillage via sublines) peuvent être silencieusement
-        # ignorées ou incohérentes. On vérifie et on demande la permission de le
-        # déverrouiller via une fenêtre native avant de poursuivre.
-        try:
-            created_details = _tapir_run_command(
-                'GetDetailsOfElements', {'elements': [{'elementId': mesh_element_id}]}
-            )
-            layer_idx = created_details['detailsOfElements'][0].get('layerIndex')
-            if layer_idx is not None:
-                attrs_resp = _archicad_run_command('API.GetAttributesByType', {'attributeType': 'Layer'})
-                layer_ids = [{'attributeId': a['attributeId']} for a in attrs_resp['attributeIds']]
-                layer_attrs = _archicad_run_command('API.GetLayerAttributes', {'attributeIds': layer_ids})
-                attrs = layer_attrs['attributes']
-                if 0 <= layer_idx < len(attrs):
-                    layer = attrs[layer_idx]['layerAttribute']
-                    if layer.get('isLocked'):
-                        alert = _tapir_run_command('ShowAlert', {
-                            'alertType': 'warning',
-                            'title': 'Cadastre Tool',
-                            'message': f"Le calque « {layer.get('name', '')} » est verrouillé.",
-                            'subMessage': 'Le déverrouiller pour permettre la génération ?',
-                            'button1': 'Déverrouiller',
-                            'button2': 'Continuer sans',
-                        })
-                        if alert and alert.get('clickedButton') == 1:
-                            _tapir_run_command('CreateLayers', {
-                                'layerDataArray': [{'index': str(layer_idx), 'isLocked': False}],
-                                'overwriteExisting': True,
-                            })
-        except Exception as e:
-            errors.append(f'Vérification du calque : erreur — {e}')
 
         # Sommets du contour tels que dessinés (pas densifiés) : Archicad insère lui-même
         # des points intermédiaires cohérents là où ce contour traverse la grille interne
