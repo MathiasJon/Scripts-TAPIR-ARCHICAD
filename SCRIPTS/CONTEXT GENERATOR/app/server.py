@@ -1026,55 +1026,58 @@ def get_monuments():
     geom = json.dumps(_bbox_polygon(min_lon, min_lat, max_lon, max_lat))
 
     def _gpu(path):
-        try:
-            r = _apicarto_get(path, {'geom': geom, '_limit': 1000}, timeout=25, retries=2)
-            return r.json().get('features', [])
-        except (requests.RequestException, ValueError):
-            return []
+        # Ne PAS avaler l'erreur ici : un retour [] silencieux en cas d'indisponibilité
+        # IGN se traduirait par « aucun monument trouvé » affiché à l'utilisateur, au
+        # lieu de l'informer que la requête a échoué (constaté sur ce calque).
+        r = _apicarto_get(path, {'geom': geom, '_limit': 1000}, timeout=25, retries=2)
+        return r.json().get('features', [])
 
     def _is_ac1(f):
         p = f.get('properties', {})
         ident = str(p.get('idgen') or p.get('idass') or '')
         return ident.startswith('AC1')
 
-    # Emprises des monuments — gardées individuelles (identifiables au survol).
-    monuments = []
-    for f in _gpu('/api/gpu/generateur-sup-s'):
-        if not _is_ac1(f) or not f.get('geometry'):
-            continue
-        geom_out = f['geometry']
-        lon, lat = _geom_centroid_lonlat(geom_out)
-        if _SHAPELY_OK:
-            try:
-                geom_out = _shapely_mapping(
-                    _shapely_shape(geom_out).buffer(0).simplify(2e-5, preserve_topology=True))
-            except Exception:
-                pass
-        monuments.append({
-            'name': _fix_mojibake(f['properties'].get('nomsuplitt')) or 'Monument historique',
-            'lon': lon, 'lat': lat,
-            'geometry': geom_out,
-        })
-    truncated_monuments = len(monuments) > 500
-    monuments = monuments[:500]
-
-    # Abords — union en un seul polygone (ils se recouvrent massivement).
-    abords_geojson = None
-    if _SHAPELY_OK:
-        abords_polys = []
-        for f in _gpu('/api/gpu/assiette-sup-s'):
+    try:
+        # Emprises des monuments — gardées individuelles (identifiables au survol).
+        monuments = []
+        for f in _gpu('/api/gpu/generateur-sup-s'):
             if not _is_ac1(f) or not f.get('geometry'):
                 continue
-            try:
-                abords_polys.append(_shapely_shape(f['geometry']).buffer(0))
-            except Exception:
-                pass
-        if abords_polys:
-            try:
-                abords_geojson = _shapely_mapping(
-                    _unary_union(abords_polys).simplify(3e-5, preserve_topology=True))
-            except Exception:
-                abords_geojson = None
+            geom_out = f['geometry']
+            lon, lat = _geom_centroid_lonlat(geom_out)
+            if _SHAPELY_OK:
+                try:
+                    geom_out = _shapely_mapping(
+                        _shapely_shape(geom_out).buffer(0).simplify(2e-5, preserve_topology=True))
+                except Exception:
+                    pass
+            monuments.append({
+                'name': _fix_mojibake(f['properties'].get('nomsuplitt')) or 'Monument historique',
+                'lon': lon, 'lat': lat,
+                'geometry': geom_out,
+            })
+        truncated_monuments = len(monuments) > 500
+        monuments = monuments[:500]
+
+        # Abords — union en un seul polygone (ils se recouvrent massivement).
+        abords_geojson = None
+        if _SHAPELY_OK:
+            abords_polys = []
+            for f in _gpu('/api/gpu/assiette-sup-s'):
+                if not _is_ac1(f) or not f.get('geometry'):
+                    continue
+                try:
+                    abords_polys.append(_shapely_shape(f['geometry']).buffer(0))
+                except Exception:
+                    pass
+            if abords_polys:
+                try:
+                    abords_geojson = _shapely_mapping(
+                        _unary_union(abords_polys).simplify(3e-5, preserve_topology=True))
+                except Exception:
+                    abords_geojson = None
+    except (requests.RequestException, ValueError) as e:
+        return jsonify({'error': f'Service IGN indisponible : {e}'}), 502
 
     return jsonify({'monuments': monuments, 'abords_geojson': abords_geojson,
                     'truncated': truncated_monuments})
