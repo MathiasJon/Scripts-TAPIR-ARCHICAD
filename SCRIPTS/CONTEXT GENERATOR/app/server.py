@@ -1507,8 +1507,13 @@ def archicad_generate():
     # « Invalid program status (no open project) » peu parlant. On coupe court —
     # mais uniquement sur cette signature précise : toute autre anomalie de la
     # sonde ne doit pas empêcher une génération par ailleurs valide.
+    # NB : 'GetProjectInfo' est une commande TAPIR (TapirCommand.GetProjectInfo),
+    # pas une commande de base Archicad — 'API.GetProjectInfo' n'existe pas
+    # (constaté : "Command 'API.GetProjectInfo' not found"), donc l'appeler via
+    # _archicad_run_command ne déclenchait jamais le court-circuit voulu, laissant
+    # chaque étape suivante échouer une par une avec la même erreur brute.
     try:
-        _archicad_run_command('API.GetProjectInfo')
+        _tapir_run_command('GetProjectInfo')
     except Exception as e:
         low = str(e).lower()
         if 'no open project' in low or 'no plan' in low or 'invalid program status' in low:
