@@ -77,11 +77,18 @@ def _handle_uncaught(e):
     """Filet de sécurité pour /api/* : sans ça, une exception non prévue (ex. un
     aléa Archicad pendant une génération) fait renvoyer par Flask sa page d'erreur
     HTML par défaut, que le frontend tente de parser en JSON — provoquant un
-    "JSON.parse: unexpected character" au lieu du vrai message d'erreur."""
+    "JSON.parse: unexpected character" au lieu du vrai message d'erreur.
+
+    Couvre aussi les HTTPException (404/405/413...) : une requête qui échoue
+    AVANT la logique métier (route désynchronisée frontend/backend, méthode
+    erronée, corps trop volumineux) déclenche sinon la page d'erreur HTML par
+    défaut de Werkzeug même sur /api/* — observé en pratique sur le générateur
+    de terrain, avec le même symptôme côté navigateur que l'exception générique
+    que ce garde-fou visait à l'origine."""
     from werkzeug.exceptions import HTTPException
-    if isinstance(e, HTTPException):
-        return e
     if request.path.startswith('/api/'):
+        if isinstance(e, HTTPException):
+            return jsonify({'error': e.description or e.name}), e.code or 500
         return jsonify({'error': str(e) or type(e).__name__}), 500
     raise e
 
@@ -114,7 +121,15 @@ def _archicad_run_command(command, parameters=None, timeout=60):
     seule une vraie erreur de connexion (requête jamais partie) est réessayée.
     """
     global _tapir_port_cache
-    ports_to_try = [_tapir_port_cache] if _tapir_port_cache else TAPIR_PORTS
+    # Le port en cache est essayé EN PREMIER (chemin rapide habituel), mais si Archicad a
+    # changé de port entre-temps (ex: redémarré, retombé sur 19723 alors qu'on était passé
+    # sur 19724), on se rabat sur les autres ports connus plutôt que d'échouer
+    # indéfiniment sur un cache périmé (bug constaté : plus aucune commande ne passait
+    # après un redémarrage d'Archicad tant que ce process Flask n'était pas relancé).
+    if _tapir_port_cache:
+        ports_to_try = [_tapir_port_cache] + [p for p in TAPIR_PORTS if p != _tapir_port_cache]
+    else:
+        ports_to_try = TAPIR_PORTS
     last_err = None
     resp = None
     for port in ports_to_try:
@@ -2490,12 +2505,13 @@ def _fetch_ortho_wms(min_x, min_y, max_x, max_y, max_dim=4096):
     url = 'https://data.geopf.fr/wms-r'
     print(f'[ortho] GET {url} BBOX={params["BBOX"]} {w}x{h}px')
     try:
-        r = requests.get(url, params=params, timeout=60)
+        # _ign_request (pas requests.get direct) : ce service renvoie de temps en temps un
+        # 502/503 transitoire (surcharge/passerelle momentanément indisponible côté IGN) sur
+        # une requête pourtant valide — réessayé automatiquement avec backoff, comme les
+        # autres appels IGN de cet outil (constaté : un simple nouvel essai quelques
+        # secondes après suffit dans la grande majorité des cas).
+        r = _ign_request('GET', url, params=params, timeout=60, retries=4, service_label='WMS orthophoto IGN')
         print(f'[ortho] réponse HTTP {r.status_code} Content-Type={r.headers.get("Content-Type")}')
-        if r.status_code != 200:
-            body = r.text[:400] if r.text else ''
-            print(f'[ortho] corps erreur : {body}')
-            return None, f'WMS HTTP {r.status_code} — {body}', 0, 0
         if 'image' not in r.headers.get('Content-Type', ''):
             preview = r.text[:300] if r.text else ''
             print(f'[ortho] corps non-image : {preview}')
